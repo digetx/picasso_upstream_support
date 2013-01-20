@@ -448,6 +448,7 @@ dtb-$(CONFIG_ARCH_TEGRA) += tegra20-harmony.dtb \
 	tegra20-iris-512.dtb \
 	tegra20-medcom-wide.dtb \
 	tegra20-paz00.dtb \
+	tegra20-picasso.dtb \
 	tegra20-plutux.dtb \
 	tegra20-seaboard.dtb \
 	tegra20-tec.dtb \
