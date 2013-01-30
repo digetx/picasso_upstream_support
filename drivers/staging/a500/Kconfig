@@ -9,4 +9,6 @@ if A500
 
 source "drivers/staging/a500/ec/Kconfig"
 
+source "drivers/staging/a500/touchscreen/Kconfig"
+
 endif # A500
