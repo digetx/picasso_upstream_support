@@ -184,6 +184,9 @@ static int gpio_charger_probe(struct platform_device *pdev)
 	charger->get_property = gpio_charger_get_property;
 	charger->supplied_to = pdata->supplied_to;
 	charger->num_supplicants = pdata->num_supplicants;
+#ifdef CONFIG_OF
+	charger->of_node = pdev->dev.of_node;
+#endif
 
 	ret = gpio_request(pdata->gpio, dev_name(&pdev->dev));
 	if (ret) {
