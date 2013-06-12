@@ -349,6 +349,13 @@
 		status = "okay";
 		clock-frequency = <400000>;
 
+		touchscreen@4c {
+			compatible = "atmel,mxt-ts-a500";
+			reg = <0x4c>;
+			interrupt-parent = <&gpio>;
+			interrupts = <TEGRA_GPIO(V, 6) IRQ_TYPE_EDGE_FALLING>;
+		};
+
 		wm8903: wm8903@1a {
 			compatible = "wlf,wm8903";
 			reg = <0x1a>;
