@@ -140,6 +140,10 @@ static int sdio_read_cccr(struct mmc_card *card, u32 ocr)
 
 		if (data & SDIO_POWER_SMPC)
 			card->cccr.high_power = 1;
+
+		ret = mmc_io_rw_direct(card, 0, 0, SDIO_CCCR_SPEED, 0, &speed);
+		if (ret == 0 && cccr_vsn < SDIO_CCCR_REV_1_20)
+			cccr_vsn = SDIO_CCCR_REV_1_20;
 	}
 
 	if (cccr_vsn >= SDIO_CCCR_REV_1_20) {
