@@ -1090,6 +1090,22 @@ static const struct snd_soc_dapm_route wm8903_intercon[] = {
 	{ "Right Line Output PGA", NULL, "Charge Pump" },
 };
 
+static void wm8903_setup_mic_det_irqs(struct snd_soc_codec *codec)
+{
+	struct wm8903_priv *wm8903 = snd_soc_codec_get_drvdata(codec);
+	int irq_mask = WM8903_MICDET_EINT | WM8903_MICSHRT_EINT;
+
+	/* Enable interrupts we've got a report configured for */
+	if (wm8903->mic_det)
+		irq_mask &= ~WM8903_MICDET_EINT;
+	if (wm8903->mic_short)
+		irq_mask &= ~WM8903_MICSHRT_EINT;
+
+	snd_soc_update_bits(codec, WM8903_INTERRUPT_STATUS_1_MASK,
+			    WM8903_MICDET_EINT | WM8903_MICSHRT_EINT,
+			    irq_mask);
+}
+
 static int wm8903_set_bias_level(struct snd_soc_codec *codec,
 				 enum snd_soc_bias_level level)
 {
@@ -1168,6 +1184,8 @@ static int wm8903_set_bias_level(struct snd_soc_codec *codec,
 					    WM8903_CP_DYN_V,
 					    WM8903_CP_DYN_FREQ |
 					    WM8903_CP_DYN_V);
+
+			wm8903_setup_mic_det_irqs(codec);
 		}
 
 		snd_soc_update_bits(codec, WM8903_VMID_CONTROL_0,
@@ -1176,6 +1194,8 @@ static int wm8903_set_bias_level(struct snd_soc_codec *codec,
 		break;
 
 	case SND_SOC_BIAS_OFF:
+		snd_soc_write(codec, WM8903_INTERRUPT_STATUS_1_MASK, 0xffff);
+
 		snd_soc_update_bits(codec, WM8903_BIAS_CONTROL_0,
 				    WM8903_BIAS_ENA, 0);
 
@@ -1599,7 +1619,6 @@ int wm8903_mic_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack,
 		      int det, int shrt)
 {
 	struct wm8903_priv *wm8903 = snd_soc_codec_get_drvdata(codec);
-	int irq_mask = WM8903_MICDET_EINT | WM8903_MICSHRT_EINT;
 
 	dev_dbg(codec->dev, "Enabling microphone detection: %x %x\n",
 		det, shrt);
@@ -1609,15 +1628,7 @@ int wm8903_mic_detect(struct snd_soc_codec *codec, struct snd_soc_jack *jack,
 	wm8903->mic_det = det;
 	wm8903->mic_short = shrt;
 
-	/* Enable interrupts we've got a report configured for */
-	if (det)
-		irq_mask &= ~WM8903_MICDET_EINT;
-	if (shrt)
-		irq_mask &= ~WM8903_MICSHRT_EINT;
-
-	snd_soc_update_bits(codec, WM8903_INTERRUPT_STATUS_1_MASK,
-			    WM8903_MICDET_EINT | WM8903_MICSHRT_EINT,
-			    irq_mask);
+	wm8903_setup_mic_det_irqs(codec);
 
 	if (det || shrt) {
 		/* Enable mic detection, this may not have been set through
@@ -1640,6 +1651,13 @@ static irqreturn_t wm8903_irq(int irq, void *data)
 	struct wm8903_priv *wm8903 = data;
 	int mic_report, ret;
 	unsigned int int_val, mask, int_pol;
+
+	/*
+	 * During suspend, a shared IRQ may be triggered by some other device.
+	 * If so, just ignore it; WM8903 shouldn't be generating interrupts.
+	 */
+	if (wm8903->codec->dapm.bias_level == SND_SOC_BIAS_OFF)
+		return IRQ_NONE;
 
 	ret = regmap_read(wm8903->regmap, WM8903_INTERRUPT_STATUS_1_MASK,
 			  &mask);
