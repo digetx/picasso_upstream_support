@@ -1,0 +1,25 @@
+config MFD_EC_A500
+	bool "Embedded Controller driver for Acer A50x tablets"
+	depends on I2C && ARCH_TEGRA
+	select MFD_CORE
+	help
+	  Say Y to include support for Acer A50x compliant embedded
+	  controller.
+
+config EC_A500_LEGACY_SYSFS
+	tristate "Legacy A50x EC sysfs for Android compatibility"
+	depends on MFD_EC_A500
+	help
+	  Say Y to include support for Acer A50x EC legacy sysfs.
+
+config EC_A500_BATTERY
+	tristate "Acer A50x battery driver"
+	depends on MFD_EC_A500 && POWER_SUPPLY
+	help
+	  Say Y to include support for battery behind A500 EC.
+
+config EC_A500_LEDS
+	tristate "LEDs support for Acer A50x"
+	depends on MFD_EC_A500 && LEDS_CLASS
+	help
+	  Say Y to enable control of power button leds.

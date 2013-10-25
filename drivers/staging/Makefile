@@ -1,5 +1,7 @@
 # Makefile for staging directory
 
+obj-$(CONFIG_A500)		+= a500/
+
 obj-y				+= media/
 obj-$(CONFIG_SLICOSS)		+= slicoss/
 obj-$(CONFIG_PRISM2_USB)	+= wlan-ng/
