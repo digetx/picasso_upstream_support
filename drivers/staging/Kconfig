@@ -23,6 +23,7 @@ menuconfig STAGING
 
 
 if STAGING
+source "drivers/staging/acer_ec/Kconfig"
 
 source "drivers/staging/slicoss/Kconfig"
 
