@@ -386,6 +386,7 @@
 
 				battery {
 					compatible = "acer,a50x-battery";
+					power-supplies = <&gpio_charger>;
 				};
 
 				leds {
@@ -399,6 +400,12 @@
 	i2c@7000c500 {
 		status = "okay";
 		clock-frequency = <400000>;
+	};
+
+	gpio_charger: charger {
+		compatible = "gpio-charger";
+		charger-type = <3>;
+		gpio = <&gpio TEGRA_GPIO(V, 3) GPIO_ACTIVE_LOW>;
 	};
 
 	clocks {
