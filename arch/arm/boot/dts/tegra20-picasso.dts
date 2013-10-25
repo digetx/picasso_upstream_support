@@ -376,6 +376,22 @@
 			reg = <1>;
 			#address-cells = <1>;
 			#size-cells = <0>;
+
+			embedded-controller@58 {
+				compatible = "acer,a50x-ec";
+				reg = <0x58>;
+				ec,i2c-retry-count = <5>;
+				system-power-controller;
+
+				battery {
+					compatible = "acer,a50x-battery";
+				};
+
+				leds {
+					compatible = "acer,a50x-leds";
+					leds-reset;
+				};
+			};
 		};
 	};
 
