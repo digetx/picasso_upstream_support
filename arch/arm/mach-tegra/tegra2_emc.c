@@ -329,6 +329,8 @@ static int tegra_emc_probe(struct platform_device *pdev)
 
 	emc_pdev = pdev;
 
+	tegra_emc_set_rate(600000000);
+
 	return 0;
 }
 
