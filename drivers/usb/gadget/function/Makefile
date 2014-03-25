@@ -5,6 +5,10 @@
 ccflags-y			:= -I$(srctree)/drivers/usb/gadget/
 ccflags-y			+= -I$(srctree)/drivers/usb/gadget/udc/
 
+ifdef CONFIG_USB_TEGRA
+ccflags-y			+= -DNET_IP_ALIGN=0
+endif
+
 # USB Functions
 usb_f_acm-y			:= f_acm.o
 obj-$(CONFIG_USB_F_ACM)		+= usb_f_acm.o
