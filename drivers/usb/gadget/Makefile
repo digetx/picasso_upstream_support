@@ -4,6 +4,11 @@
 ccflags-$(CONFIG_USB_GADGET_DEBUG)	:= -DDEBUG
 ccflags-$(CONFIG_USB_GADGET_VERBOSE)	+= -DVERBOSE_DEBUG
 
+ifdef CONFIG_USB_TEGRA
+obj-$(CONFIG_USB_TEGRA)		+= tegra_udc.o
+ccflags-y			+= -DNET_IP_ALIGN=0
+endif
+
 obj-$(CONFIG_USB_GADGET)	+= udc-core.o
 obj-$(CONFIG_USB_LIBCOMPOSITE)	+= libcomposite.o
 libcomposite-y			:= usbstring.o config.o epautoconf.o
