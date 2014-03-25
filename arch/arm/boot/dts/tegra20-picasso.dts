@@ -700,6 +700,7 @@
 	};
 
 	usb@c5000000 {
+		compatible = "nvidia,tegra20-udc";
 		status = "okay";
 	};
 
