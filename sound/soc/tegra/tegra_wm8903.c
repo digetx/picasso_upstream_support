@@ -168,6 +168,28 @@ static const struct snd_kcontrol_new tegra_wm8903_controls[] = {
 	SOC_DAPM_PIN_SWITCH("Int Spk"),
 };
 
+static int tegra_wm8903_jack_notifier(struct notifier_block *self,
+				      unsigned long action, void *dev)
+{
+	struct snd_soc_jack *jack = dev;
+	struct snd_soc_codec *codec = jack->codec;
+	struct snd_soc_dapm_context *dapm = &codec->dapm;
+
+	if (action & SND_JACK_HEADPHONE) {
+		snd_soc_dapm_enable_pin(dapm, "Headphone Jack");
+		snd_soc_dapm_disable_pin(dapm, "Int Spk");
+	} else {
+		snd_soc_dapm_disable_pin(dapm, "Headphone Jack");
+		snd_soc_dapm_enable_pin(dapm, "Int Spk");
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block tegra_wm8903_jack_detect_nb = {
+	.notifier_call = tegra_wm8903_jack_notifier,
+};
+
 static int tegra_wm8903_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_dai *codec_dai = rtd->codec_dai;
@@ -186,6 +208,8 @@ static int tegra_wm8903_init(struct snd_soc_pcm_runtime *rtd)
 		snd_soc_jack_add_gpios(&tegra_wm8903_hp_jack,
 					1,
 					&tegra_wm8903_hp_jack_gpio);
+		snd_soc_jack_notifier_register(&tegra_wm8903_hp_jack,
+				&tegra_wm8903_jack_detect_nb);
 	}
 
 	snd_soc_jack_new(codec, "Mic Jack", SND_JACK_MICROPHONE,
