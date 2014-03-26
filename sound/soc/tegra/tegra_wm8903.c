@@ -30,6 +30,7 @@
 
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
@@ -53,6 +54,7 @@ struct tegra_wm8903 {
 	int gpio_int_mic_en;
 	int gpio_ext_mic_en;
 	struct tegra_asoc_utils_data util_data;
+	struct regulator *dmic_reg;
 };
 
 static int tegra_wm8903_hw_params(struct snd_pcm_substream *substream,
@@ -134,6 +136,13 @@ static int tegra_wm8903_event_int_mic(struct snd_soc_dapm_widget *w,
 
 	if (!gpio_is_valid(machine->gpio_int_mic_en))
 		return 0;
+
+	if (!IS_ERR(machine->dmic_reg)) {
+		if (SND_SOC_DAPM_EVENT_ON(event))
+			WARN_ON(regulator_enable(machine->dmic_reg));
+		else
+			regulator_disable(machine->dmic_reg);
+	}
 
 	gpio_set_value_cansleep(machine->gpio_int_mic_en,
 				SND_SOC_DAPM_EVENT_ON(event));
@@ -357,6 +366,10 @@ static int tegra_wm8903_driver_probe(struct platform_device *pdev)
 			return ret;
 		}
 	}
+
+	machine->dmic_reg = devm_regulator_get(&pdev->dev, "vdd_dmic");
+	if (IS_ERR(machine->dmic_reg))
+		dev_info(&pdev->dev, "No digital mic regulator found\n");
 
 	ret = snd_soc_of_parse_card_name(card, "nvidia,model");
 	if (ret)
