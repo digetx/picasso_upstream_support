@@ -563,7 +563,7 @@
 					regulator-always-on;
 				};
 
-				ldo6 {
+				avdd_vdac_reg: ldo6 {
 					regulator-name = "vdd_ldo6,avdd_vdac";
 					regulator-min-microvolt = <1800000>;
 					regulator-max-microvolt = <1800000>;
@@ -715,7 +715,10 @@
 			"Int Spk", "LINEOUTR",
 			"Mic Jack", "MICBIAS",
 			"IN2L", "Mic Jack",
-			"IN2R", "Mic Jack";
+			"IN2R", "Mic Jack",
+			"Int Mic", "MICBIAS",
+			"IN1L", "Int Mic",
+			"IN1R", "Int Mic";
 
 		nvidia,i2s-controller = <&tegra_i2s1>;
 		nvidia,audio-codec = <&wm8903>;
@@ -723,6 +726,8 @@
 		nvidia,spkr-en-gpios = <&wm8903 2 0>;
 		nvidia,hp-det-gpios = <&gpio 178 0>; /* gpio PW2 */
 		nvidia,int-mic-en-gpios = <&wm8903 1 0>; /* gpio FM2018 */
+
+		vdd_dmic-supply = <&avdd_vdac_reg>;
 
 		clocks = <&tegra_car 112>, <&tegra_car 113>, <&tegra_car 94>;
 		clock-names = "pll_a", "pll_a_out0", "mclk";
