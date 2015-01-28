@@ -17,7 +17,9 @@
 #define SOR_STATE_UPDATE (1 << 0)
 
 #define HDMI_NV_PDISP_SOR_STATE1				0x02
+#define SOR_STATE_ASY_HEAD_OPMODE_SLEEP (0 << 0)
 #define SOR_STATE_ASY_HEAD_OPMODE_AWAKE (2 << 0)
+#define SOR_STATE_ASY_ORMODE_SAFE       (0 << 2)
 #define SOR_STATE_ASY_ORMODE_NORMAL     (1 << 2)
 #define SOR_STATE_ATTACHED              (1 << 3)
 
