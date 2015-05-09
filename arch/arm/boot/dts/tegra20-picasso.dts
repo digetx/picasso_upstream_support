@@ -531,6 +531,7 @@
 			regulator-max-microvolt = <3300000>;
 			gpio = <&gpio TEGRA_GPIO(D, 1) GPIO_ACTIVE_HIGH>;
 			enable-active-high;
+			regulator-always-on;
 			regulator-boot-on;
 		};
 
@@ -553,6 +554,19 @@
 			regulator-min-microvolt = <5000000>;
 			regulator-max-microvolt = <5000000>;
 			gpio = <&gpio TEGRA_GPIO(D, 3) GPIO_ACTIVE_HIGH>;
+			enable-active-high;
+			regulator-always-on;
+			regulator-boot-on;
+		};
+
+		regulator@6 {
+			compatible = "regulator-fixed";
+			reg = <6>;
+			regulator-name = "bcm_wifi_rst";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+			gpio = <&gpio TEGRA_GPIO(K, 6) GPIO_ACTIVE_HIGH>;
+			regulator-enable-ramp-delay = <300000>;
 			enable-active-high;
 			regulator-always-on;
 			regulator-boot-on;
