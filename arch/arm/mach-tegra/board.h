@@ -55,5 +55,6 @@ static inline int harmony_pcie_init(void) { return 0; }
 #endif
 
 void __init tegra_paz00_wifikill_init(void);
+void __init tegra_picasso_rfkill_init(void);
 
 #endif

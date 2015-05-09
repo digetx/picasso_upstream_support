@@ -144,6 +144,12 @@ static void __init paz00_init(void)
 		tegra_paz00_wifikill_init();
 }
 
+static void __init picasso_init(void)
+{
+	if (IS_ENABLED(CONFIG_ARCH_TEGRA_2x_SOC))
+		tegra_picasso_rfkill_init();
+}
+
 static struct {
 	char *machine;
 	void (*init)(void);
@@ -151,6 +157,7 @@ static struct {
 	{ "compulab,trimslice", trimslice_init },
 	{ "nvidia,harmony", harmony_init },
 	{ "compal,paz00", paz00_init },
+	{ "acer,picasso", picasso_init },
 };
 
 static void __init tegra_dt_init_late(void)
