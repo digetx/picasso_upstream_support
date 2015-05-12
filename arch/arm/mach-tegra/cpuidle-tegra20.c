@@ -66,7 +66,8 @@ static struct cpuidle_driver tegra_idle_driver = {
 		},
 #endif
 	},
-	.state_count = TEGRA20_MAX_STATES,
+// 	.state_count = TEGRA20_MAX_STATES,
+	.state_count = 1,	/* FIXME */
 	.safe_state_index = 0,
 };
 
