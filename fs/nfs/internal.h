@@ -31,8 +31,6 @@ static inline int nfs_attr_use_mounted_on_fileid(struct nfs_fattr *fattr)
 	    (((fattr->valid & NFS_ATTR_FATTR_MOUNTPOINT) == 0) &&
 	     ((fattr->valid & NFS_ATTR_FATTR_V4_REFERRAL) == 0)))
 		return 0;
-
-	fattr->fileid = fattr->mounted_on_fileid;
 	return 1;
 }
 
@@ -377,7 +375,7 @@ extern struct rpc_stat nfs_rpcstat;
 
 extern int __init register_nfs_fs(void);
 extern void __exit unregister_nfs_fs(void);
-extern void nfs_sb_active(struct super_block *sb);
+extern bool nfs_sb_active(struct super_block *sb);
 extern void nfs_sb_deactive(struct super_block *sb);
 
 /* namespace.c */
@@ -494,6 +492,26 @@ extern int nfs40_walk_client_list(struct nfs_client *clp,
 extern int nfs41_walk_client_list(struct nfs_client *clp,
 				struct nfs_client **result,
 				struct rpc_cred *cred);
+
+static inline struct inode *nfs_igrab_and_active(struct inode *inode)
+{
+	inode = igrab(inode);
+	if (inode != NULL && !nfs_sb_active(inode->i_sb)) {
+		iput(inode);
+		inode = NULL;
+	}
+	return inode;
+}
+
+static inline void nfs_iput_and_deactive(struct inode *inode)
+{
+	if (inode != NULL) {
+		struct super_block *sb = inode->i_sb;
+
+		iput(inode);
+		nfs_sb_deactive(sb);
+	}
+}
 
 /*
  * Determine the device name as a string

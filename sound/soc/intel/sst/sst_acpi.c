@@ -47,7 +47,7 @@ struct sst_machines {
 	char board[32];
 	char machine[32];
 	void (*machine_quirk)(void);
-	char firmware[32];
+	char firmware[FW_NAME_SIZE];
 	struct sst_platform_info *pdata;
 
 };
@@ -343,14 +343,14 @@ int sst_acpi_remove(struct platform_device *pdev)
 }
 
 static struct sst_machines sst_acpi_bytcr[] = {
-	{"10EC5640", "T100", "bytt100_rt5640", NULL, "fw_sst_0f28.bin",
+	{"10EC5640", "T100", "bytt100_rt5640", NULL, "intel/fw_sst_0f28.bin",
 						&byt_rvp_platform_data },
 	{},
 };
 
 /* Cherryview-based platforms: CherryTrail and Braswell */
 static struct sst_machines sst_acpi_chv[] = {
-	{"10EC5670", "cht-bsw", "cht-bsw-rt5672", NULL, "fw_sst_22a8.bin",
+	{"10EC5670", "cht-bsw", "cht-bsw-rt5672", NULL, "intel/fw_sst_22a8.bin",
 						&chv_platform_data },
 	{},
 };

@@ -4942,7 +4942,7 @@ tracing_mark_write(struct file *filp, const char __user *ubuf,
 	*fpos += written;
 
  out_unlock:
-	for (i = 0; i < nr_pages; i++){
+	for (i = nr_pages - 1; i >= 0; i--) {
 		kunmap_atomic(map_page[i]);
 		put_page(pages[i]);
 	}
@@ -6918,7 +6918,6 @@ void __init trace_init(void)
 			tracepoint_printk = 0;
 	}
 	tracer_alloc_buffers();
-	init_ftrace_syscalls();
 	trace_event_init();	
 }
 

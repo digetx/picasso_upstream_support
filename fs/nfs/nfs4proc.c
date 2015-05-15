@@ -1117,8 +1117,6 @@ static int can_open_delegated(struct nfs_delegation *delegation, fmode_t fmode)
 		return 0;
 	if ((delegation->type & fmode) != fmode)
 		return 0;
-	if (test_bit(NFS_DELEGATION_NEED_RECLAIM, &delegation->flags))
-		return 0;
 	if (test_bit(NFS_DELEGATION_RETURNING, &delegation->flags))
 		return 0;
 	nfs_mark_delegation_referenced(delegation);
@@ -4917,10 +4915,13 @@ static void nfs4_init_boot_verifier(const struct nfs_client *clp,
 }
 
 static unsigned int
-nfs4_init_nonuniform_client_string(const struct nfs_client *clp,
+nfs4_init_nonuniform_client_string(struct nfs_client *clp,
 				   char *buf, size_t len)
 {
 	unsigned int result;
+
+	if (clp->cl_owner_id != NULL)
+		return strlcpy(buf, clp->cl_owner_id, len);
 
 	rcu_read_lock();
 	result = scnprintf(buf, len, "Linux NFSv4.0 %s/%s %s",
@@ -4930,24 +4931,32 @@ nfs4_init_nonuniform_client_string(const struct nfs_client *clp,
 				rpc_peeraddr2str(clp->cl_rpcclient,
 							RPC_DISPLAY_PROTO));
 	rcu_read_unlock();
+	clp->cl_owner_id = kstrdup(buf, GFP_KERNEL);
 	return result;
 }
 
 static unsigned int
-nfs4_init_uniform_client_string(const struct nfs_client *clp,
+nfs4_init_uniform_client_string(struct nfs_client *clp,
 				char *buf, size_t len)
 {
 	const char *nodename = clp->cl_rpcclient->cl_nodename;
+	unsigned int result;
+
+	if (clp->cl_owner_id != NULL)
+		return strlcpy(buf, clp->cl_owner_id, len);
 
 	if (nfs4_client_id_uniquifier[0] != '\0')
-		return scnprintf(buf, len, "Linux NFSv%u.%u %s/%s",
+		result = scnprintf(buf, len, "Linux NFSv%u.%u %s/%s",
 				clp->rpc_ops->version,
 				clp->cl_minorversion,
 				nfs4_client_id_uniquifier,
 				nodename);
-	return scnprintf(buf, len, "Linux NFSv%u.%u %s",
+	else
+		result = scnprintf(buf, len, "Linux NFSv%u.%u %s",
 				clp->rpc_ops->version, clp->cl_minorversion,
 				nodename);
+	clp->cl_owner_id = kstrdup(buf, GFP_KERNEL);
+	return result;
 }
 
 /*
@@ -5128,9 +5137,13 @@ static void nfs4_delegreturn_done(struct rpc_task *task, void *calldata)
 static void nfs4_delegreturn_release(void *calldata)
 {
 	struct nfs4_delegreturndata *data = calldata;
+	struct inode *inode = data->inode;
 
-	if (data->roc)
-		pnfs_roc_release(data->inode);
+	if (inode) {
+		if (data->roc)
+			pnfs_roc_release(inode);
+		nfs_iput_and_deactive(inode);
+	}
 	kfree(calldata);
 }
 
@@ -5187,9 +5200,9 @@ static int _nfs4_proc_delegreturn(struct inode *inode, struct rpc_cred *cred, co
 	nfs_fattr_init(data->res.fattr);
 	data->timestamp = jiffies;
 	data->rpc_status = 0;
-	data->inode = inode;
-	data->roc = list_empty(&NFS_I(inode)->open_files) ?
-		    pnfs_roc(inode) : false;
+	data->inode = nfs_igrab_and_active(inode);
+	if (data->inode)
+		data->roc = nfs4_roc(inode);
 
 	task_setup_data.callback_data = data;
 	msg.rpc_argp = &data->args;

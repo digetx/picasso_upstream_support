@@ -1185,7 +1185,7 @@ iscsit_handle_scsi_cmd(struct iscsi_conn *conn, struct iscsi_cmd *cmd,
 	 * traditional iSCSI block I/O.
 	 */
 	if (iscsit_allocate_iovecs(cmd) < 0) {
-		return iscsit_add_reject_cmd(cmd,
+		return iscsit_reject_cmd(cmd,
 				ISCSI_REASON_BOOKMARK_NO_RESOURCES, buf);
 	}
 	immed_data = cmd->immediate_data;
@@ -2027,10 +2027,10 @@ iscsit_process_text_cmd(struct iscsi_conn *conn, struct iscsi_cmd *cmd,
 		goto reject;
 	}
 	if (!strncmp("=All", text_ptr, 4)) {
-		cmd->cmd_flags |= IFC_SENDTARGETS_ALL;
+		cmd->cmd_flags |= ICF_SENDTARGETS_ALL;
 	} else if (!strncmp("=iqn.", text_ptr, 5) ||
 		   !strncmp("=eui.", text_ptr, 5)) {
-		cmd->cmd_flags |= IFC_SENDTARGETS_SINGLE;
+		cmd->cmd_flags |= ICF_SENDTARGETS_SINGLE;
 	} else {
 		pr_err("Unable to locate valid SendTargets=%s value\n", text_ptr);
 		goto reject;
@@ -3415,10 +3415,10 @@ iscsit_build_sendtargets_response(struct iscsi_cmd *cmd,
 		return -ENOMEM;
 	}
 	/*
-	 * Locate pointer to iqn./eui. string for IFC_SENDTARGETS_SINGLE
+	 * Locate pointer to iqn./eui. string for ICF_SENDTARGETS_SINGLE
 	 * explicit case..
 	 */
-	if (cmd->cmd_flags & IFC_SENDTARGETS_SINGLE) {
+	if (cmd->cmd_flags & ICF_SENDTARGETS_SINGLE) {
 		text_ptr = strchr(text_in, '=');
 		if (!text_ptr) {
 			pr_err("Unable to locate '=' string in text_in:"
@@ -3434,7 +3434,7 @@ iscsit_build_sendtargets_response(struct iscsi_cmd *cmd,
 
 	spin_lock(&tiqn_lock);
 	list_for_each_entry(tiqn, &g_tiqn_list, tiqn_list) {
-		if ((cmd->cmd_flags & IFC_SENDTARGETS_SINGLE) &&
+		if ((cmd->cmd_flags & ICF_SENDTARGETS_SINGLE) &&
 		     strcmp(tiqn->tiqn, text_ptr)) {
 			continue;
 		}
@@ -3512,7 +3512,7 @@ eob:
 		if (end_of_buf)
 			break;
 
-		if (cmd->cmd_flags & IFC_SENDTARGETS_SINGLE)
+		if (cmd->cmd_flags & ICF_SENDTARGETS_SINGLE)
 			break;
 	}
 	spin_unlock(&tiqn_lock);
@@ -4221,11 +4221,17 @@ int iscsit_close_connection(
 	pr_debug("Closing iSCSI connection CID %hu on SID:"
 		" %u\n", conn->cid, sess->sid);
 	/*
-	 * Always up conn_logout_comp just in case the RX Thread is sleeping
-	 * and the logout response never got sent because the connection
-	 * failed.
+	 * Always up conn_logout_comp for the traditional TCP case just in case
+	 * the RX Thread in iscsi_target_rx_opcode() is sleeping and the logout
+	 * response never got sent because the connection failed.
+	 *
+	 * However for iser-target, isert_wait4logout() is using conn_logout_comp
+	 * to signal logout response TX interrupt completion.  Go ahead and skip
+	 * this for iser since isert_rx_opcode() does not wait on logout failure,
+	 * and to avoid iscsi_conn pointer dereference in iser-target code.
 	 */
-	complete(&conn->conn_logout_comp);
+	if (conn->conn_transport->transport_type == ISCSI_TCP)
+		complete(&conn->conn_logout_comp);
 
 	iscsi_release_thread_set(conn);
 

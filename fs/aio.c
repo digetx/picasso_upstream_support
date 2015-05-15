@@ -740,6 +740,9 @@ static struct kioctx *ioctx_alloc(unsigned nr_events)
 err_cleanup:
 	aio_nr_sub(ctx->max_reqs);
 err_ctx:
+	atomic_set(&ctx->dead, 1);
+	if (ctx->mmap_size)
+		vm_munmap(ctx->mmap_base, ctx->mmap_size);
 	aio_free_ring(ctx);
 err:
 	mutex_unlock(&ctx->ring_lock);
@@ -1140,6 +1143,13 @@ static long aio_read_events_ring(struct kioctx *ctx,
 	long ret = 0;
 	int copy_ret;
 
+	/*
+	 * The mutex can block and wake us up and that will cause
+	 * wait_event_interruptible_hrtimeout() to schedule without sleeping
+	 * and repeat. This should be rare enough that it doesn't cause
+	 * peformance issues. See the comment in read_events() for more detail.
+	 */
+	sched_annotate_sleep();
 	mutex_lock(&ctx->ring_lock);
 
 	/* Access to ->ring_pages here is protected by ctx->ring_lock. */

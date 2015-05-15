@@ -357,16 +357,6 @@ static void device_init_registers(struct vnt_private *pDevice)
 	/* zonetype initial */
 	pDevice->byOriginalZonetype = pDevice->abyEEPROM[EEP_OFS_ZONETYPE];
 
-	/* Get RFType */
-	pDevice->byRFType = SROMbyReadEmbedded(pDevice->PortOffset, EEP_OFS_RFTYPE);
-
-	/* force change RevID for VT3253 emu */
-	if ((pDevice->byRFType & RF_EMU) != 0)
-			pDevice->byRevId = 0x80;
-
-	pDevice->byRFType &= RF_MASK;
-	pr_debug("pDevice->byRFType = %x\n", pDevice->byRFType);
-
 	if (!pDevice->bZoneRegExist)
 		pDevice->byZoneType = pDevice->abyEEPROM[EEP_OFS_ZONETYPE];
 
@@ -1232,7 +1222,7 @@ static int vnt_tx_packet(struct vnt_private *priv, struct sk_buff *skb)
 
 	head_td = priv->apCurrTD[dma_idx];
 
-	head_td->m_td1TD1.byTCR = (TCR_EDP|TCR_STP);
+	head_td->m_td1TD1.byTCR = 0;
 
 	head_td->pTDInfo->skb = skb;
 
@@ -1256,6 +1246,11 @@ static int vnt_tx_packet(struct vnt_private *priv, struct sk_buff *skb)
 	spin_lock_irqsave(&priv->lock, flags);
 
 	priv->bPWBitOn = false;
+
+	/* Set TSR1 & ReqCount in TxDescHead */
+	head_td->m_td1TD1.byTCR |= (TCR_STP | TCR_EDP | EDMSDU);
+	head_td->m_td1TD1.wReqCount =
+			cpu_to_le16((u16)head_td->pTDInfo->dwReqCount);
 
 	head_td->pTDInfo->byFlags = TD_FLAGS_NETIF_SKB;
 
@@ -1500,9 +1495,11 @@ static void vnt_bss_info_changed(struct ieee80211_hw *hw,
 		if (conf->enable_beacon) {
 			vnt_beacon_enable(priv, vif, conf);
 
-			MACvRegBitsOn(priv, MAC_REG_TCR, TCR_AUTOBCNTX);
+			MACvRegBitsOn(priv->PortOffset, MAC_REG_TCR,
+				      TCR_AUTOBCNTX);
 		} else {
-			MACvRegBitsOff(priv, MAC_REG_TCR, TCR_AUTOBCNTX);
+			MACvRegBitsOff(priv->PortOffset, MAC_REG_TCR,
+				       TCR_AUTOBCNTX);
 		}
 	}
 
@@ -1798,6 +1795,12 @@ vt6655_probe(struct pci_dev *pcid, const struct pci_device_id *ent)
 	/* initial to reload eeprom */
 	MACvInitialize(priv->PortOffset);
 	MACvReadEtherAddress(priv->PortOffset, priv->abyCurrentNetAddr);
+
+	/* Get RFType */
+	priv->byRFType = SROMbyReadEmbedded(priv->PortOffset, EEP_OFS_RFTYPE);
+	priv->byRFType &= RF_MASK;
+
+	dev_dbg(&pcid->dev, "RF Type = %x\n", priv->byRFType);
 
 	device_get_options(priv);
 	device_set_options(priv);

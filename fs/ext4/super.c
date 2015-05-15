@@ -3482,7 +3482,7 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
 				       EXT4_FEATURE_RO_COMPAT_METADATA_CSUM) &&
 	    EXT4_HAS_RO_COMPAT_FEATURE(sb, EXT4_FEATURE_RO_COMPAT_GDT_CSUM))
-		ext4_warning(sb, KERN_INFO "metadata_csum and uninit_bg are "
+		ext4_warning(sb, "metadata_csum and uninit_bg are "
 			     "redundant flags; please run fsck.");
 
 	/* Check for a known checksum algorithm */
@@ -4864,9 +4864,8 @@ static int ext4_remount(struct super_block *sb, int *flags, char *data)
 	if ((old_opts.s_mount_opt & EXT4_MOUNT_JOURNAL_CHECKSUM) ^
 	    test_opt(sb, JOURNAL_CHECKSUM)) {
 		ext4_msg(sb, KERN_ERR, "changing journal_checksum "
-			 "during remount not supported");
-		err = -EINVAL;
-		goto restore_opts;
+			 "during remount not supported; ignoring");
+		sbi->s_mount_opt ^= EXT4_MOUNT_JOURNAL_CHECKSUM;
 	}
 
 	if (test_opt(sb, DATA_FLAGS) == EXT4_MOUNT_JOURNAL_DATA) {

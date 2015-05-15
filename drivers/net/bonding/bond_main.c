@@ -1648,7 +1648,7 @@ static int __bond_release_one(struct net_device *bond_dev,
 	/* slave is not a slave or master is not master of this slave */
 	if (!(slave_dev->flags & IFF_SLAVE) ||
 	    !netdev_has_upper_dev(slave_dev, bond_dev)) {
-		netdev_err(bond_dev, "cannot release %s\n",
+		netdev_dbg(bond_dev, "cannot release %s\n",
 			   slave_dev->name);
 		return -EINVAL;
 	}
@@ -3797,7 +3797,8 @@ static inline int bond_slave_override(struct bonding *bond,
 	/* Find out if any slaves have the same mapping as this skb. */
 	bond_for_each_slave_rcu(bond, slave, iter) {
 		if (slave->queue_id == skb->queue_mapping) {
-			if (bond_slave_can_tx(slave)) {
+			if (bond_slave_is_up(slave) &&
+			    slave->link == BOND_LINK_UP) {
 				bond_dev_queue_xmit(bond, skb, slave->dev);
 				return 0;
 			}

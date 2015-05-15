@@ -93,6 +93,12 @@ EXPORT_SYMBOL_GPL(xen_p2m_size);
 unsigned long xen_max_p2m_pfn __read_mostly;
 EXPORT_SYMBOL_GPL(xen_max_p2m_pfn);
 
+#ifdef CONFIG_XEN_BALLOON_MEMORY_HOTPLUG_LIMIT
+#define P2M_LIMIT CONFIG_XEN_BALLOON_MEMORY_HOTPLUG_LIMIT
+#else
+#define P2M_LIMIT 0
+#endif
+
 static DEFINE_SPINLOCK(p2m_update_lock);
 
 static unsigned long *p2m_mid_missing_mfn;
@@ -167,10 +173,13 @@ static void * __ref alloc_p2m_page(void)
 	return (void *)__get_free_page(GFP_KERNEL | __GFP_REPEAT);
 }
 
-/* Only to be called in case of a race for a page just allocated! */
-static void free_p2m_page(void *p)
+static void __ref free_p2m_page(void *p)
 {
-	BUG_ON(!slab_is_available());
+	if (unlikely(!slab_is_available())) {
+		free_bootmem((unsigned long)p, PAGE_SIZE);
+		return;
+	}
+
 	free_page((unsigned long)p);
 }
 
@@ -375,7 +384,7 @@ static void __init xen_rebuild_p2m_list(unsigned long *p2m)
 			p2m_missing_pte : p2m_identity_pte;
 		for (i = 0; i < PMDS_PER_MID_PAGE; i++) {
 			pmdp = populate_extra_pmd(
-				(unsigned long)(p2m + pfn + i * PTRS_PER_PTE));
+				(unsigned long)(p2m + pfn) + i * PMD_SIZE);
 			set_pmd(pmdp, __pmd(__pa(ptep) | _KERNPG_TABLE));
 		}
 	}
@@ -384,9 +393,11 @@ static void __init xen_rebuild_p2m_list(unsigned long *p2m)
 void __init xen_vmalloc_p2m_tree(void)
 {
 	static struct vm_struct vm;
+	unsigned long p2m_limit;
 
+	p2m_limit = (phys_addr_t)P2M_LIMIT * 1024 * 1024 * 1024 / PAGE_SIZE;
 	vm.flags = VM_ALLOC;
-	vm.size = ALIGN(sizeof(unsigned long) * xen_max_p2m_pfn,
+	vm.size = ALIGN(sizeof(unsigned long) * max(xen_max_p2m_pfn, p2m_limit),
 			PMD_SIZE * PMDS_PER_MID_PAGE);
 	vm_area_register_early(&vm, PMD_SIZE * PMDS_PER_MID_PAGE);
 	pr_notice("p2m virtual area at %p, size is %lx\n", vm.addr, vm.size);
@@ -436,10 +447,9 @@ EXPORT_SYMBOL_GPL(get_phys_to_machine);
  * a new pmd is to replace p2m_missing_pte or p2m_identity_pte by a individual
  * pmd. In case of PAE/x86-32 there are multiple pmds to allocate!
  */
-static pte_t *alloc_p2m_pmd(unsigned long addr, pte_t *ptep, pte_t *pte_pg)
+static pte_t *alloc_p2m_pmd(unsigned long addr, pte_t *pte_pg)
 {
 	pte_t *ptechk;
-	pte_t *pteret = ptep;
 	pte_t *pte_newpg[PMDS_PER_MID_PAGE];
 	pmd_t *pmdp;
 	unsigned int level;
@@ -473,8 +483,6 @@ static pte_t *alloc_p2m_pmd(unsigned long addr, pte_t *ptep, pte_t *pte_pg)
 		if (ptechk == pte_pg) {
 			set_pmd(pmdp,
 				__pmd(__pa(pte_newpg[i]) | _KERNPG_TABLE));
-			if (vaddr == (addr & ~(PMD_SIZE - 1)))
-				pteret = pte_offset_kernel(pmdp, addr);
 			pte_newpg[i] = NULL;
 		}
 
@@ -488,7 +496,7 @@ static pte_t *alloc_p2m_pmd(unsigned long addr, pte_t *ptep, pte_t *pte_pg)
 		vaddr += PMD_SIZE;
 	}
 
-	return pteret;
+	return lookup_address(addr, &level);
 }
 
 /*
@@ -517,7 +525,7 @@ static bool alloc_p2m(unsigned long pfn)
 
 	if (pte_pg == p2m_missing_pte || pte_pg == p2m_identity_pte) {
 		/* PMD level is missing, allocate a new one */
-		ptep = alloc_p2m_pmd(addr, ptep, pte_pg);
+		ptep = alloc_p2m_pmd(addr, pte_pg);
 		if (!ptep)
 			return false;
 	}
@@ -554,7 +562,7 @@ static bool alloc_p2m(unsigned long pfn)
 		mid_mfn = NULL;
 	}
 
-	p2m_pfn = pte_pfn(ACCESS_ONCE(*ptep));
+	p2m_pfn = pte_pfn(READ_ONCE(*ptep));
 	if (p2m_pfn == PFN_DOWN(__pa(p2m_identity)) ||
 	    p2m_pfn == PFN_DOWN(__pa(p2m_missing))) {
 		/* p2m leaf page is missing */
@@ -567,7 +575,7 @@ static bool alloc_p2m(unsigned long pfn)
 		if (p2m_pfn == PFN_DOWN(__pa(p2m_missing)))
 			p2m_init(p2m);
 		else
-			p2m_init_identity(p2m, pfn);
+			p2m_init_identity(p2m, pfn & ~(P2M_PER_PAGE - 1));
 
 		spin_lock_irqsave(&p2m_update_lock, flags);
 

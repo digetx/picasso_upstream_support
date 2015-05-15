@@ -83,8 +83,7 @@ static bool ovs_must_notify(struct genl_family *family, struct genl_info *info,
 			    unsigned int group)
 {
 	return info->nlhdr->nlmsg_flags & NLM_F_ECHO ||
-	       genl_has_listeners(family, genl_info_net(info)->genl_sock,
-				  group);
+	       genl_has_listeners(family, genl_info_net(info), group);
 }
 
 static void ovs_notify(struct genl_family *family,
@@ -525,7 +524,7 @@ static int ovs_packet_cmd_execute(struct sk_buff *skb, struct genl_info *info)
 	struct vport *input_vport;
 	int len;
 	int err;
-	bool log = !a[OVS_FLOW_ATTR_PROBE];
+	bool log = !a[OVS_PACKET_ATTR_PROBE];
 
 	err = -EINVAL;
 	if (!a[OVS_PACKET_ATTR_PACKET] || !a[OVS_PACKET_ATTR_KEY] ||
@@ -611,6 +610,7 @@ static const struct nla_policy packet_policy[OVS_PACKET_ATTR_MAX + 1] = {
 	[OVS_PACKET_ATTR_PACKET] = { .len = ETH_HLEN },
 	[OVS_PACKET_ATTR_KEY] = { .type = NLA_NESTED },
 	[OVS_PACKET_ATTR_ACTIONS] = { .type = NLA_NESTED },
+	[OVS_PACKET_ATTR_PROBE] = { .type = NLA_FLAG },
 };
 
 static const struct genl_ops dp_packet_genl_ops[] = {
@@ -2113,14 +2113,55 @@ static int __net_init ovs_init_net(struct net *net)
 	return 0;
 }
 
-static void __net_exit ovs_exit_net(struct net *net)
+static void __net_exit list_vports_from_net(struct net *net, struct net *dnet,
+					    struct list_head *head)
+{
+	struct ovs_net *ovs_net = net_generic(net, ovs_net_id);
+	struct datapath *dp;
+
+	list_for_each_entry(dp, &ovs_net->dps, list_node) {
+		int i;
+
+		for (i = 0; i < DP_VPORT_HASH_BUCKETS; i++) {
+			struct vport *vport;
+
+			hlist_for_each_entry(vport, &dp->ports[i], dp_hash_node) {
+				struct netdev_vport *netdev_vport;
+
+				if (vport->ops->type != OVS_VPORT_TYPE_INTERNAL)
+					continue;
+
+				netdev_vport = netdev_vport_priv(vport);
+				if (dev_net(netdev_vport->dev) == dnet)
+					list_add(&vport->detach_list, head);
+			}
+		}
+	}
+}
+
+static void __net_exit ovs_exit_net(struct net *dnet)
 {
 	struct datapath *dp, *dp_next;
-	struct ovs_net *ovs_net = net_generic(net, ovs_net_id);
+	struct ovs_net *ovs_net = net_generic(dnet, ovs_net_id);
+	struct vport *vport, *vport_next;
+	struct net *net;
+	LIST_HEAD(head);
 
 	ovs_lock();
 	list_for_each_entry_safe(dp, dp_next, &ovs_net->dps, list_node)
 		__dp_destroy(dp);
+
+	rtnl_lock();
+	for_each_net(net)
+		list_vports_from_net(net, dnet, &head);
+	rtnl_unlock();
+
+	/* Detach all vports from given namespace. */
+	list_for_each_entry_safe(vport, vport_next, &head, detach_list) {
+		list_del(&vport->detach_list);
+		ovs_dp_detach_port(vport);
+	}
+
 	ovs_unlock();
 
 	cancel_work_sync(&ovs_net->dp_notify_work);

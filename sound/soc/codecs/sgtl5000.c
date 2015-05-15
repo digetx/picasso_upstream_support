@@ -483,21 +483,21 @@ static int sgtl5000_set_dai_fmt(struct snd_soc_dai *codec_dai, unsigned int fmt)
 	/* setting i2s data format */
 	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
 	case SND_SOC_DAIFMT_DSP_A:
-		i2sctl |= SGTL5000_I2S_MODE_PCM;
+		i2sctl |= SGTL5000_I2S_MODE_PCM << SGTL5000_I2S_MODE_SHIFT;
 		break;
 	case SND_SOC_DAIFMT_DSP_B:
-		i2sctl |= SGTL5000_I2S_MODE_PCM;
+		i2sctl |= SGTL5000_I2S_MODE_PCM << SGTL5000_I2S_MODE_SHIFT;
 		i2sctl |= SGTL5000_I2S_LRALIGN;
 		break;
 	case SND_SOC_DAIFMT_I2S:
-		i2sctl |= SGTL5000_I2S_MODE_I2S_LJ;
+		i2sctl |= SGTL5000_I2S_MODE_I2S_LJ << SGTL5000_I2S_MODE_SHIFT;
 		break;
 	case SND_SOC_DAIFMT_RIGHT_J:
-		i2sctl |= SGTL5000_I2S_MODE_RJ;
+		i2sctl |= SGTL5000_I2S_MODE_RJ << SGTL5000_I2S_MODE_SHIFT;
 		i2sctl |= SGTL5000_I2S_LRPOL;
 		break;
 	case SND_SOC_DAIFMT_LEFT_J:
-		i2sctl |= SGTL5000_I2S_MODE_I2S_LJ;
+		i2sctl |= SGTL5000_I2S_MODE_I2S_LJ << SGTL5000_I2S_MODE_SHIFT;
 		i2sctl |= SGTL5000_I2S_LRALIGN;
 		break;
 	default:
@@ -1149,13 +1149,7 @@ static int sgtl5000_set_power_regs(struct snd_soc_codec *codec)
 		/* Enable VDDC charge pump */
 		ana_pwr |= SGTL5000_VDDC_CHRGPMP_POWERUP;
 	} else if (vddio >= 3100 && vdda >= 3100) {
-		/*
-		 * if vddio and vddd > 3.1v,
-		 * charge pump should be clean before set ana_pwr
-		 */
-		snd_soc_update_bits(codec, SGTL5000_CHIP_ANA_POWER,
-				SGTL5000_VDDC_CHRGPMP_POWERUP, 0);
-
+		ana_pwr &= ~SGTL5000_VDDC_CHRGPMP_POWERUP;
 		/* VDDC use VDDIO rail */
 		lreg_ctrl |= SGTL5000_VDDC_ASSN_OVRD;
 		lreg_ctrl |= SGTL5000_VDDC_MAN_ASSN_VDDIO <<
@@ -1461,6 +1455,9 @@ static int sgtl5000_i2c_probe(struct i2c_client *client,
 	ret = clk_prepare_enable(sgtl5000->mclk);
 	if (ret)
 		return ret;
+
+	/* Need 8 clocks before I2C accesses */
+	udelay(1);
 
 	/* read chip information */
 	ret = regmap_read(sgtl5000->regmap, SGTL5000_CHIP_ID, &reg);

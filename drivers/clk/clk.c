@@ -343,13 +343,9 @@ unlock:
 static void clk_debug_unregister(struct clk *clk)
 {
 	mutex_lock(&clk_debug_lock);
-	if (!clk->dentry)
-		goto out;
-
 	hlist_del_init(&clk->debug_node);
 	debugfs_remove_recursive(clk->dentry);
 	clk->dentry = NULL;
-out:
 	mutex_unlock(&clk_debug_lock);
 }
 
@@ -1366,7 +1362,7 @@ static struct clk *clk_calc_new_rates(struct clk *clk, unsigned long rate)
 		new_rate = clk->ops->determine_rate(clk->hw, rate,
 						    &best_parent_rate,
 						    &parent_hw);
-		parent = parent_hw->clk;
+		parent = parent_hw ? parent_hw->clk : NULL;
 	} else if (clk->ops->round_rate) {
 		new_rate = clk->ops->round_rate(clk->hw, rate,
 						&best_parent_rate);

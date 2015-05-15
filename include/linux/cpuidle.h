@@ -53,7 +53,6 @@ struct cpuidle_state {
 };
 
 /* Idle State Flags */
-#define CPUIDLE_FLAG_TIME_INVALID	(0x01) /* is residency time measurable? */
 #define CPUIDLE_FLAG_COUPLED	(0x02) /* state applies to multiple cpus */
 #define CPUIDLE_FLAG_TIMER_STOP (0x04)  /* timer is stopped on this state */
 
@@ -69,7 +68,6 @@ struct cpuidle_device {
 	unsigned int		cpu;
 
 	int			last_residency;
-	int			state_count;
 	struct cpuidle_state_usage	states_usage[CPUIDLE_STATE_MAX];
 	struct cpuidle_state_kobj *kobjs[CPUIDLE_STATE_MAX];
 	struct cpuidle_driver_kobj *kobj_driver;
@@ -89,8 +87,6 @@ DECLARE_PER_CPU(struct cpuidle_device, cpuidle_dev);
 /**
  * cpuidle_get_last_residency - retrieves the last state's residency time
  * @dev: the target CPU
- *
- * NOTE: this value is invalid if CPUIDLE_FLAG_TIME_INVALID is set
  */
 static inline int cpuidle_get_last_residency(struct cpuidle_device *dev)
 {

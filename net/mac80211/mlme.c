@@ -1054,8 +1054,6 @@ static void ieee80211_chswitch_post_beacon(struct ieee80211_sub_if_data *sdata)
 		sdata->csa_block_tx = false;
 	}
 
-	cfg80211_ch_switch_notify(sdata->dev, &sdata->reserved_chandef);
-
 	sdata->vif.csa_active = false;
 	ifmgd->csa_waiting_bcn = false;
 
@@ -1067,6 +1065,8 @@ static void ieee80211_chswitch_post_beacon(struct ieee80211_sub_if_data *sdata)
 				     &ifmgd->csa_connection_drop_work);
 		return;
 	}
+
+	cfg80211_ch_switch_notify(sdata->dev, &sdata->reserved_chandef);
 }
 
 void ieee80211_chswitch_done(struct ieee80211_vif *vif, bool success)
@@ -1643,7 +1643,7 @@ __ieee80211_sta_handle_tspec_ac_params(struct ieee80211_sub_if_data *sdata)
 {
 	struct ieee80211_local *local = sdata->local;
 	struct ieee80211_if_managed *ifmgd = &sdata->u.mgd;
-	bool ret;
+	bool ret = false;
 	int ac;
 
 	if (local->hw.queues < IEEE80211_NUM_ACS)
@@ -2231,7 +2231,7 @@ static void ieee80211_mgd_probe_ap_send(struct ieee80211_sub_if_data *sdata)
 		else
 			ssid_len = ssid[1];
 
-		ieee80211_send_probe_req(sdata, sdata->vif.addr, NULL,
+		ieee80211_send_probe_req(sdata, sdata->vif.addr, dst,
 					 ssid + 2, ssid_len, NULL,
 					 0, (u32) -1, true, 0,
 					 ifmgd->associated->channel, false);

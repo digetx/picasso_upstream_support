@@ -227,7 +227,7 @@ nft_rule_deactivate_next(struct net *net, struct nft_rule *rule)
 
 static inline void nft_rule_clear(struct net *net, struct nft_rule *rule)
 {
-	rule->genmask = 0;
+	rule->genmask &= ~(1 << gencursor_next(net));
 }
 
 static int
@@ -713,14 +713,10 @@ static int nft_flush_table(struct nft_ctx *ctx)
 	struct nft_chain *chain, *nc;
 	struct nft_set *set, *ns;
 
-	list_for_each_entry_safe(chain, nc, &ctx->table->chains, list) {
+	list_for_each_entry(chain, &ctx->table->chains, list) {
 		ctx->chain = chain;
 
 		err = nft_delrule_by_chain(ctx);
-		if (err < 0)
-			goto out;
-
-		err = nft_delchain(ctx);
 		if (err < 0)
 			goto out;
 	}
@@ -731,6 +727,14 @@ static int nft_flush_table(struct nft_ctx *ctx)
 			continue;
 
 		err = nft_delset(ctx, set);
+		if (err < 0)
+			goto out;
+	}
+
+	list_for_each_entry_safe(chain, nc, &ctx->table->chains, list) {
+		ctx->chain = chain;
+
+		err = nft_delchain(ctx);
 		if (err < 0)
 			goto out;
 	}
@@ -1130,9 +1134,11 @@ static struct nft_stats __percpu *nft_stats_alloc(const struct nlattr *attr)
 	/* Restore old counters on this cpu, no problem. Per-cpu statistics
 	 * are not exposed to userspace.
 	 */
+	preempt_disable();
 	stats = this_cpu_ptr(newstats);
 	stats->bytes = be64_to_cpu(nla_get_be64(tb[NFTA_COUNTER_BYTES]));
 	stats->pkts = be64_to_cpu(nla_get_be64(tb[NFTA_COUNTER_PACKETS]));
+	preempt_enable();
 
 	return newstats;
 }
@@ -1258,8 +1264,10 @@ static int nf_tables_newchain(struct sock *nlsk, struct sk_buff *skb,
 		nft_ctx_init(&ctx, skb, nlh, afi, table, chain, nla);
 		trans = nft_trans_alloc(&ctx, NFT_MSG_NEWCHAIN,
 					sizeof(struct nft_trans_chain));
-		if (trans == NULL)
+		if (trans == NULL) {
+			free_percpu(stats);
 			return -ENOMEM;
+		}
 
 		nft_trans_chain_stats(trans) = stats;
 		nft_trans_chain_update(trans) = true;
@@ -1315,8 +1323,10 @@ static int nf_tables_newchain(struct sock *nlsk, struct sk_buff *skb,
 		hookfn = type->hooks[hooknum];
 
 		basechain = kzalloc(sizeof(*basechain), GFP_KERNEL);
-		if (basechain == NULL)
+		if (basechain == NULL) {
+			module_put(type->owner);
 			return -ENOMEM;
+		}
 
 		if (nla[NFTA_CHAIN_COUNTERS]) {
 			stats = nft_stats_alloc(nla[NFTA_CHAIN_COUNTERS]);
@@ -3596,12 +3606,11 @@ static int nf_tables_commit(struct sk_buff *skb)
 						 &te->elem,
 						 NFT_MSG_DELSETELEM, 0);
 			te->set->ops->get(te->set, &te->elem);
-			te->set->ops->remove(te->set, &te->elem);
 			nft_data_uninit(&te->elem.key, NFT_DATA_VALUE);
-			if (te->elem.flags & NFT_SET_MAP) {
-				nft_data_uninit(&te->elem.data,
-						te->set->dtype);
-			}
+			if (te->set->flags & NFT_SET_MAP &&
+			    !(te->elem.flags & NFT_SET_ELEM_INTERVAL_END))
+				nft_data_uninit(&te->elem.data, te->set->dtype);
+			te->set->ops->remove(te->set, &te->elem);
 			nft_trans_destroy(trans);
 			break;
 		}
@@ -3642,7 +3651,7 @@ static int nf_tables_abort(struct sk_buff *skb)
 {
 	struct net *net = sock_net(skb->sk);
 	struct nft_trans *trans, *next;
-	struct nft_set *set;
+	struct nft_trans_elem *te;
 
 	list_for_each_entry_safe(trans, next, &net->nft.commit_list, list) {
 		switch (trans->msg_type) {
@@ -3703,9 +3712,13 @@ static int nf_tables_abort(struct sk_buff *skb)
 			break;
 		case NFT_MSG_NEWSETELEM:
 			nft_trans_elem_set(trans)->nelems--;
-			set = nft_trans_elem_set(trans);
-			set->ops->get(set, &nft_trans_elem(trans));
-			set->ops->remove(set, &nft_trans_elem(trans));
+			te = (struct nft_trans_elem *)trans->data;
+			te->set->ops->get(te->set, &te->elem);
+			nft_data_uninit(&te->elem.key, NFT_DATA_VALUE);
+			if (te->set->flags & NFT_SET_MAP &&
+			    !(te->elem.flags & NFT_SET_ELEM_INTERVAL_END))
+				nft_data_uninit(&te->elem.data, te->set->dtype);
+			te->set->ops->remove(te->set, &te->elem);
 			nft_trans_destroy(trans);
 			break;
 		case NFT_MSG_DELSETELEM:
@@ -3748,6 +3761,24 @@ int nft_chain_validate_dependency(const struct nft_chain *chain,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(nft_chain_validate_dependency);
+
+int nft_chain_validate_hooks(const struct nft_chain *chain,
+			     unsigned int hook_flags)
+{
+	struct nft_base_chain *basechain;
+
+	if (chain->flags & NFT_BASE_CHAIN) {
+		basechain = nft_base_chain(chain);
+
+		if ((1 << basechain->ops[0].hooknum) & hook_flags)
+			return 0;
+
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(nft_chain_validate_hooks);
 
 /*
  * Loop detection - walk through the ruleset beginning at the destination chain

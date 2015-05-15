@@ -3102,7 +3102,8 @@ static void handle_stripe_dirtying(struct r5conf *conf,
 	 * generate correct data from the parity.
 	 */
 	if (conf->max_degraded == 2 ||
-	    (recovery_cp < MaxSector && sh->sector >= recovery_cp)) {
+	    (recovery_cp < MaxSector && sh->sector >= recovery_cp &&
+	     s->failed == 0)) {
 		/* Calculate the real rcw later - for now make it
 		 * look like rcw is cheaper
 		 */
@@ -3195,6 +3196,11 @@ static void handle_stripe_dirtying(struct r5conf *conf,
 					  (unsigned long long)sh->sector,
 					  rcw, qread, test_bit(STRIPE_DELAYED, &sh->state));
 	}
+
+	if (rcw > disks && rmw > disks &&
+	    !test_bit(STRIPE_PREREAD_ACTIVE, &sh->state))
+		set_bit(STRIPE_DELAYED, &sh->state);
+
 	/* now if nothing is locked, and if we have enough data,
 	 * we can start a write request
 	 */

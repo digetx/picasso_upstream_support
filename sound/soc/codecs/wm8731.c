@@ -125,7 +125,7 @@ static int wm8731_get_deemph(struct snd_kcontrol *kcontrol,
 	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
 	struct wm8731_priv *wm8731 = snd_soc_codec_get_drvdata(codec);
 
-	ucontrol->value.enumerated.item[0] = wm8731->deemph;
+	ucontrol->value.integer.value[0] = wm8731->deemph;
 
 	return 0;
 }
@@ -135,7 +135,7 @@ static int wm8731_put_deemph(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
 	struct wm8731_priv *wm8731 = snd_soc_codec_get_drvdata(codec);
-	int deemph = ucontrol->value.enumerated.item[0];
+	int deemph = ucontrol->value.integer.value[0];
 	int ret = 0;
 
 	if (deemph > 1)
@@ -716,6 +716,8 @@ static int wm8731_i2c_probe(struct i2c_client *i2c,
 			      GFP_KERNEL);
 	if (wm8731 == NULL)
 		return -ENOMEM;
+
+	mutex_init(&wm8731->lock);
 
 	wm8731->regmap = devm_regmap_init_i2c(i2c, &wm8731_regmap);
 	if (IS_ERR(wm8731->regmap)) {
