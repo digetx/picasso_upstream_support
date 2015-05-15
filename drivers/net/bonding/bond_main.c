@@ -1724,6 +1724,7 @@ static int __bond_release_one(struct net_device *bond_dev,
 	struct bonding *bond = netdev_priv(bond_dev);
 	struct slave *slave, *oldcurrent;
 	struct sockaddr addr;
+	int old_flags = bond_dev->flags;
 	netdev_features_t old_features = bond_dev->features;
 
 	/* slave is not a slave or master is not master of this slave */
@@ -1855,12 +1856,18 @@ static int __bond_release_one(struct net_device *bond_dev,
 	 * bond_change_active_slave(..., NULL)
 	 */
 	if (!USES_PRIMARY(bond->params.mode)) {
-		/* unset promiscuity level from slave */
-		if (bond_dev->flags & IFF_PROMISC)
+		/* unset promiscuity level from slave
+		 * NOTE: The NETDEV_CHANGEADDR call above may change the value
+		 * of the IFF_PROMISC flag in the bond_dev, but we need the
+		 * value of that flag before that change, as that was the value
+		 * when this slave was attached, so we cache at the start of the
+		 * function and use it here. Same goes for ALLMULTI below
+		 */
+		if (old_flags & IFF_PROMISC)
 			dev_set_promiscuity(slave_dev, -1);
 
 		/* unset allmulti level from slave */
-		if (bond_dev->flags & IFF_ALLMULTI)
+		if (old_flags & IFF_ALLMULTI)
 			dev_set_allmulti(slave_dev, -1);
 
 		bond_hw_addr_flush(bond_dev, slave_dev);
@@ -3388,20 +3395,20 @@ static void bond_set_rx_mode(struct net_device *bond_dev)
 	struct bonding *bond = netdev_priv(bond_dev);
 	struct slave *slave;
 
-	ASSERT_RTNL();
-
+	rcu_read_lock();
 	if (USES_PRIMARY(bond->params.mode)) {
-		slave = rtnl_dereference(bond->curr_active_slave);
+		slave = rcu_dereference(bond->curr_active_slave);
 		if (slave) {
 			dev_uc_sync(slave->dev, bond_dev);
 			dev_mc_sync(slave->dev, bond_dev);
 		}
 	} else {
-		bond_for_each_slave(bond, slave) {
+		bond_for_each_slave_rcu(bond, slave) {
 			dev_uc_sync_multiple(slave->dev, bond_dev);
 			dev_mc_sync_multiple(slave->dev, bond_dev);
 		}
 	}
+	rcu_read_unlock();
 }
 
 static int bond_neigh_init(struct neighbour *n)
@@ -3652,7 +3659,7 @@ void bond_xmit_slave_id(struct bonding *bond, struct sk_buff *skb, int slave_id)
 		}
 	}
 	/* no slave that can tx has been found */
-	kfree_skb(skb);
+	dev_kfree_skb_any(skb);
 }
 
 static int bond_xmit_roundrobin(struct sk_buff *skb, struct net_device *bond_dev)
@@ -3695,7 +3702,7 @@ static int bond_xmit_activebackup(struct sk_buff *skb, struct net_device *bond_d
 	if (slave)
 		bond_dev_queue_xmit(bond, skb, slave->dev);
 	else
-		kfree_skb(skb);
+		dev_kfree_skb_any(skb);
 
 	return NETDEV_TX_OK;
 }
@@ -3739,7 +3746,7 @@ static int bond_xmit_broadcast(struct sk_buff *skb, struct net_device *bond_dev)
 	if (slave && IS_UP(slave->dev) && slave->link == BOND_LINK_UP)
 		bond_dev_queue_xmit(bond, skb, slave->dev);
 	else
-		kfree_skb(skb);
+		dev_kfree_skb_any(skb);
 
 	return NETDEV_TX_OK;
 }
@@ -3844,7 +3851,7 @@ static netdev_tx_t __bond_start_xmit(struct sk_buff *skb, struct net_device *dev
 		pr_err("%s: Error: Unknown bonding mode %d\n",
 		       dev->name, bond->params.mode);
 		WARN_ON_ONCE(1);
-		kfree_skb(skb);
+		dev_kfree_skb_any(skb);
 		return NETDEV_TX_OK;
 	}
 }
@@ -3865,7 +3872,7 @@ static netdev_tx_t bond_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (!list_empty(&bond->slave_list))
 		ret = __bond_start_xmit(skb, dev);
 	else
-		kfree_skb(skb);
+		dev_kfree_skb_any(skb);
 	rcu_read_unlock();
 
 	return ret;
@@ -4416,6 +4423,7 @@ static int bond_check_params(struct bond_params *params)
 	params->all_slaves_active = all_slaves_active;
 	params->resend_igmp = resend_igmp;
 	params->min_links = min_links;
+	params->lp_interval = BOND_ALB_DEFAULT_LP_INTERVAL;
 
 	if (primary) {
 		strncpy(params->primary, primary, IFNAMSIZ);
@@ -4615,6 +4623,7 @@ static int __init bonding_init(void)
 out:
 	return res;
 err:
+	bond_destroy_debugfs();
 	rtnl_link_unregister(&bond_link_ops);
 err_link:
 	unregister_pernet_subsys(&bond_net_ops);

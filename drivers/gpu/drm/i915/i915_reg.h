@@ -309,6 +309,7 @@
 #define   PIPE_CONTROL_GLOBAL_GTT_IVB			(1<<24) /* gen7+ */
 #define   PIPE_CONTROL_CS_STALL				(1<<20)
 #define   PIPE_CONTROL_TLB_INVALIDATE			(1<<18)
+#define   PIPE_CONTROL_MEDIA_STATE_CLEAR		(1<<16)
 #define   PIPE_CONTROL_QW_WRITE				(1<<14)
 #define   PIPE_CONTROL_DEPTH_STALL			(1<<13)
 #define   PIPE_CONTROL_WRITE_FLUSH			(1<<12)
@@ -570,6 +571,9 @@
 /*
  * Instruction and interrupt control regs
  */
+#define PGTBL_CTL	0x02020
+#define   PGTBL_ADDRESS_LO_MASK	0xfffff000 /* bits [31:12] */
+#define   PGTBL_ADDRESS_HI_MASK	0x000000f0 /* bits [35:32] (gen4) */
 #define PGTBL_ER	0x02024
 #define RENDER_RING_BASE	0x02000
 #define BSD_RING_BASE		0x04000
@@ -604,6 +608,10 @@
 #define   ARB_MODE_SWIZZLE_IVB	(1<<5)
 #define RENDER_HWS_PGA_GEN7	(0x04080)
 #define RING_FAULT_REG(ring)	(0x4094 + 0x100*(ring)->id)
+#define   RING_FAULT_GTTSEL_MASK (1<<11)
+#define   RING_FAULT_SRCID(x)	((x >> 3) & 0xff)
+#define   RING_FAULT_FAULT_TYPE(x) ((x >> 1) & 0x3)
+#define   RING_FAULT_VALID	(1<<0)
 #define DONE_REG		0x40b0
 #define BSD_HWS_PGA_GEN7	(0x04180)
 #define BLT_HWS_PGA_GEN7	(0x04280)
@@ -1951,9 +1959,13 @@
  * Please check the detailed lore in the commit message for for experimental
  * evidence.
  */
-#define   PORTD_HOTPLUG_LIVE_STATUS               (1 << 29)
-#define   PORTC_HOTPLUG_LIVE_STATUS               (1 << 28)
-#define   PORTB_HOTPLUG_LIVE_STATUS               (1 << 27)
+#define   PORTD_HOTPLUG_LIVE_STATUS_G4X		(1 << 29)
+#define   PORTC_HOTPLUG_LIVE_STATUS_G4X		(1 << 28)
+#define   PORTB_HOTPLUG_LIVE_STATUS_G4X		(1 << 27)
+/* VLV DP/HDMI bits again match Bspec */
+#define   PORTD_HOTPLUG_LIVE_STATUS_VLV		(1 << 27)
+#define   PORTC_HOTPLUG_LIVE_STATUS_VLV		(1 << 28)
+#define   PORTB_HOTPLUG_LIVE_STATUS_VLV		(1 << 29)
 #define   PORTD_HOTPLUG_INT_STATUS		(3 << 21)
 #define   PORTC_HOTPLUG_INT_STATUS		(3 << 19)
 #define   PORTB_HOTPLUG_INT_STATUS		(3 << 17)
@@ -3881,6 +3893,9 @@
 #define GEN7_SQ_CHICKEN_MBCUNIT_CONFIG		0x9030
 #define  GEN7_SQ_CHICKEN_MBCUNIT_SQINTMOB	(1<<11)
 
+#define HSW_SCRATCH1				0xb038
+#define  HSW_SCRATCH1_L3_DATA_ATOMICS_DISABLE	(1<<27)
+
 #define HSW_FUSE_STRAP		0x42014
 #define  HSW_CDCLK_LIMIT	(1 << 24)
 
@@ -4276,7 +4291,9 @@
 #define FDI_RX_CHICKEN(pipe) _PIPE(pipe, _FDI_RXA_CHICKEN, _FDI_RXB_CHICKEN)
 
 #define SOUTH_DSPCLK_GATE_D	0xc2020
+#define  PCH_DPLUNIT_CLOCK_GATE_DISABLE (1<<30)
 #define  PCH_DPLSUNIT_CLOCK_GATE_DISABLE (1<<29)
+#define  PCH_CPUNIT_CLOCK_GATE_DISABLE (1<<14)
 #define  PCH_LP_PARTITION_LEVEL_DISABLE  (1<<12)
 
 /* CPU: FDI_TX */
@@ -4727,6 +4744,9 @@
 #define GEN7_ROW_CHICKEN2		0xe4f4
 #define GEN7_ROW_CHICKEN2_GT2		0xf4f4
 #define   DOP_CLOCK_GATING_DISABLE	(1<<0)
+
+#define HSW_ROW_CHICKEN3		0xe49c
+#define  HSW_ROW_CHICKEN3_L3_GLOBAL_ATOMICS_DISABLE    (1 << 6)
 
 #define G4X_AUD_VID_DID			(dev_priv->info->display_mmio_offset + 0x62020)
 #define INTEL_AUDIO_DEVCL		0x808629FB

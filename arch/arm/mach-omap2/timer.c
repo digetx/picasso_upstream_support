@@ -503,11 +503,11 @@ static void __init realtime_counter_init(void)
 	rate = clk_get_rate(sys_clk);
 	/* Numerator/denumerator values refer TRM Realtime Counter section */
 	switch (rate) {
-	case 1200000:
+	case 12000000:
 		num = 64;
 		den = 125;
 		break;
-	case 1300000:
+	case 13000000:
 		num = 768;
 		den = 1625;
 		break;
@@ -515,11 +515,11 @@ static void __init realtime_counter_init(void)
 		num = 8;
 		den = 25;
 		break;
-	case 2600000:
+	case 26000000:
 		num = 384;
 		den = 1625;
 		break;
-	case 2700000:
+	case 27000000:
 		num = 256;
 		den = 1125;
 		break;
@@ -628,7 +628,7 @@ void __init omap4_local_timer_init(void)
 #endif /* CONFIG_HAVE_ARM_TWD */
 #endif /* CONFIG_ARCH_OMAP4 */
 
-#ifdef CONFIG_SOC_OMAP5
+#if defined(CONFIG_SOC_OMAP5) || defined(CONFIG_SOC_DRA7XX)
 void __init omap5_realtime_timer_init(void)
 {
 	omap4_sync32k_timer_init();
@@ -636,7 +636,7 @@ void __init omap5_realtime_timer_init(void)
 
 	clocksource_of_init();
 }
-#endif /* CONFIG_SOC_OMAP5 */
+#endif /* CONFIG_SOC_OMAP5 || CONFIG_SOC_DRA7XX */
 
 /**
  * omap_timer_init - build and register timer device with an

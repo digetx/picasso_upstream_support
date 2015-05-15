@@ -293,10 +293,9 @@ static void gpio_rcar_parse_pdata(struct gpio_rcar_priv *p)
 	if (pdata) {
 		p->config = *pdata;
 	} else if (IS_ENABLED(CONFIG_OF) && np) {
-		ret = of_parse_phandle_with_args(np, "gpio-ranges",
-				"#gpio-range-cells", 0, &args);
-		p->config.number_of_pins = ret == 0 && args.args_count == 3
-					 ? args.args[2]
+		ret = of_parse_phandle_with_fixed_args(np, "gpio-ranges", 3, 0,
+						       &args);
+		p->config.number_of_pins = ret == 0 ? args.args[2]
 					 : RCAR_MAX_GPIO_PER_BANK;
 		p->config.gpio_base = -1;
 	}
@@ -381,7 +380,7 @@ static int gpio_rcar_probe(struct platform_device *pdev)
 	if (!p->irq_domain) {
 		ret = -ENXIO;
 		dev_err(&pdev->dev, "cannot initialize irq domain\n");
-		goto err1;
+		goto err0;
 	}
 
 	if (devm_request_irq(&pdev->dev, irq->start,

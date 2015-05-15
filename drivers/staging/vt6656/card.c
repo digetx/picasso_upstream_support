@@ -172,8 +172,8 @@ static u16 swGetOFDMControlRate(struct vnt_private *pDevice, u16 wRateIdx)
 	if (!CARDbIsOFDMinBasicRate(pDevice)) {
 		DBG_PRT(MSG_LEVEL_DEBUG, KERN_INFO
 			"swGetOFDMControlRate:(NO OFDM) %d\n", wRateIdx);
-	if (wRateIdx > RATE_24M)
-		wRateIdx = RATE_24M;
+		if (wRateIdx > RATE_24M)
+			wRateIdx = RATE_24M;
 		return wRateIdx;
 	}
 
@@ -731,7 +731,7 @@ u64 CARDqGetNextTBTT(u64 qwTSF, u16 wBeaconInterval)
 
     uBeaconInterval = wBeaconInterval * 1024;
     // Next TBTT = ((local_current_TSF / beacon_interval) + 1 ) * beacon_interval
-	uLowNextTBTT = ((qwTSF & 0xffffffffU) >> 10) << 10;
+	uLowNextTBTT = ((qwTSF & 0xffffffffULL) >> 10) << 10;
 	uLowRemain = (uLowNextTBTT) % uBeaconInterval;
 	uHighRemain = ((0x80000000 % uBeaconInterval) * 2 * (u32)(qwTSF >> 32))
 		% uBeaconInterval;

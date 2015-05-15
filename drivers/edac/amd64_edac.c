@@ -1238,9 +1238,17 @@ static u8 f15_m30h_determine_channel(struct amd64_pvt *pvt, u64 sys_addr,
 	if (num_dcts_intlv == 2) {
 		select = (sys_addr >> 8) & 0x3;
 		channel = select ? 0x3 : 0;
-	} else if (num_dcts_intlv == 4)
-		channel = (sys_addr >> 8) & 0x7;
-
+	} else if (num_dcts_intlv == 4) {
+		u8 intlv_addr = dct_sel_interleave_addr(pvt);
+		switch (intlv_addr) {
+		case 0x4:
+			channel = (sys_addr >> 8) & 0x3;
+			break;
+		case 0x5:
+			channel = (sys_addr >> 9) & 0x3;
+			break;
+		}
+	}
 	return channel;
 }
 
@@ -2035,7 +2043,13 @@ static inline void __amd64_decode_bus_error(struct mem_ctl_info *mci,
 
 void amd64_decode_bus_error(int node_id, struct mce *m)
 {
-	__amd64_decode_bus_error(mcis[node_id], m);
+	struct mem_ctl_info *mci;
+
+	mci = edac_mc_find(node_id);
+	if (!mci)
+		return;
+
+	__amd64_decode_bus_error(mci, m);
 }
 
 /*

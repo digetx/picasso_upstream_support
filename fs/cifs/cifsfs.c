@@ -87,10 +87,6 @@ extern mempool_t *cifs_mid_poolp;
 
 struct workqueue_struct	*cifsiod_wq;
 
-#ifdef CONFIG_CIFS_SMB2
-__u8 cifs_client_guid[SMB2_CLIENT_GUID_SIZE];
-#endif
-
 /*
  * Bumps refcount for cifs super block.
  * Note that it should be only called if a referece to VFS super block is
@@ -120,14 +116,16 @@ cifs_read_super(struct super_block *sb)
 {
 	struct inode *inode;
 	struct cifs_sb_info *cifs_sb;
+	struct cifs_tcon *tcon;
 	int rc = 0;
 
 	cifs_sb = CIFS_SB(sb);
+	tcon = cifs_sb_master_tcon(cifs_sb);
 
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_POSIXACL)
 		sb->s_flags |= MS_POSIXACL;
 
-	if (cifs_sb_master_tcon(cifs_sb)->ses->capabilities & CAP_LARGE_FILES)
+	if (tcon->ses->capabilities & tcon->ses->server->vals->cap_large_files)
 		sb->s_maxbytes = MAX_LFS_FILESIZE;
 	else
 		sb->s_maxbytes = MAX_NON_LFS;
@@ -147,7 +145,7 @@ cifs_read_super(struct super_block *sb)
 		goto out_no_root;
 	}
 
-	if (cifs_sb_master_tcon(cifs_sb)->nocase)
+	if (tcon->nocase)
 		sb->s_d_op = &cifs_ci_dentry_ops;
 	else
 		sb->s_d_op = &cifs_dentry_ops;
@@ -251,6 +249,11 @@ cifs_alloc_inode(struct super_block *sb)
 	cifs_set_oplock_level(cifs_inode, 0);
 	cifs_inode->delete_pending = false;
 	cifs_inode->invalid_mapping = false;
+	clear_bit(CIFS_INODE_PENDING_OPLOCK_BREAK, &cifs_inode->flags);
+	clear_bit(CIFS_INODE_PENDING_WRITERS, &cifs_inode->flags);
+	clear_bit(CIFS_INODE_DOWNGRADE_OPLOCK_TO_L2, &cifs_inode->flags);
+	spin_lock_init(&cifs_inode->writers_lock);
+	cifs_inode->writers = 0;
 	cifs_inode->vfs_inode.i_blkbits = 14;  /* 2**14 = CIFS_MAX_MSGSIZE */
 	cifs_inode->server_eof = 0;
 	cifs_inode->uniqueid = 0;
@@ -729,19 +732,26 @@ static ssize_t cifs_file_aio_write(struct kiocb *iocb, const struct iovec *iov,
 				   unsigned long nr_segs, loff_t pos)
 {
 	struct inode *inode = file_inode(iocb->ki_filp);
+	struct cifsInodeInfo *cinode = CIFS_I(inode);
 	ssize_t written;
 	int rc;
+
+	written = cifs_get_writer(cinode);
+	if (written)
+		return written;
 
 	written = generic_file_aio_write(iocb, iov, nr_segs, pos);
 
 	if (CIFS_CACHE_WRITE(CIFS_I(inode)))
-		return written;
+		goto out;
 
 	rc = filemap_fdatawrite(inode->i_mapping);
 	if (rc)
 		cifs_dbg(FYI, "cifs_file_aio_write: %d rc on %p inode\n",
 			 rc, inode);
 
+out:
+	cifs_put_writer(cinode);
 	return written;
 }
 
@@ -1177,10 +1187,6 @@ init_cifs(void)
 	spin_lock_init(&cifs_tcp_ses_lock);
 	spin_lock_init(&cifs_file_list_lock);
 	spin_lock_init(&GlobalMid_Lock);
-
-#ifdef CONFIG_CIFS_SMB2
-	get_random_bytes(cifs_client_guid, SMB2_CLIENT_GUID_SIZE);
-#endif
 
 	if (cifs_max_pending < 2) {
 		cifs_max_pending = 2;

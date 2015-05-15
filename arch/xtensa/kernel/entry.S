@@ -1001,9 +1001,8 @@ ENTRY(fast_syscall_xtensa)
 	movi	a7, 4			# sizeof(unsigned int)
 	access_ok a3, a7, a0, a2, .Leac	# a0: scratch reg, a2: sp
 
-	addi	a6, a6, -1		# assuming SYS_XTENSA_ATOMIC_SET = 1
-	_bgeui	a6, SYS_XTENSA_COUNT - 1, .Lill
-	_bnei	a6, SYS_XTENSA_ATOMIC_CMP_SWP - 1, .Lnswp
+	_bgeui	a6, SYS_XTENSA_COUNT, .Lill
+	_bnei	a6, SYS_XTENSA_ATOMIC_CMP_SWP, .Lnswp
 
 	/* Fall through for ATOMIC_CMP_SWP. */
 
@@ -1015,27 +1014,26 @@ TRY	s32i	a5, a3, 0		# different, modify value
 	l32i	a7, a2, PT_AREG7	# restore a7
 	l32i	a0, a2, PT_AREG0	# restore a0
 	movi	a2, 1			# and return 1
-	addi	a6, a6, 1		# restore a6 (really necessary?)
 	rfe
 
 1:	l32i	a7, a2, PT_AREG7	# restore a7
 	l32i	a0, a2, PT_AREG0	# restore a0
 	movi	a2, 0			# return 0 (note that we cannot set
-	addi	a6, a6, 1		# restore a6 (really necessary?)
 	rfe
 
 .Lnswp:	/* Atomic set, add, and exg_add. */
 
 TRY	l32i	a7, a3, 0		# orig
+	addi	a6, a6, -SYS_XTENSA_ATOMIC_SET
 	add	a0, a4, a7		# + arg
 	moveqz	a0, a4, a6		# set
+	addi	a6, a6, SYS_XTENSA_ATOMIC_SET
 TRY	s32i	a0, a3, 0		# write new value
 
 	mov	a0, a2
 	mov	a2, a7
 	l32i	a7, a0, PT_AREG7	# restore a7
 	l32i	a0, a0, PT_AREG0	# restore a0
-	addi	a6, a6, 1		# restore a6 (really necessary?)
 	rfe
 
 CATCH
@@ -1044,7 +1042,7 @@ CATCH
 	movi	a2, -EFAULT
 	rfe
 
-.Lill:	l32i	a7, a2, PT_AREG0	# restore a7
+.Lill:	l32i	a7, a2, PT_AREG7	# restore a7
 	l32i	a0, a2, PT_AREG0	# restore a0
 	movi	a2, -EINVAL
 	rfe
@@ -1117,12 +1115,19 @@ ENDPROC(fast_syscall_spill_registers)
  * We basically restore WINDOWBASE and WINDOWSTART to the condition when
  * we entered the spill routine and jump to the user exception handler.
  *
+ * Note that we only need to restore the bits in windowstart that have not
+ * been spilled yet by the _spill_register routine. Luckily, a3 contains a
+ * rotated windowstart with only those bits set for frames that haven't been
+ * spilled yet. Because a3 is rotated such that bit 0 represents the register
+ * frame for the current windowbase - 1, we need to rotate a3 left by the
+ * value of the current windowbase + 1 and move it to windowstart.
+ *
  * a0: value of depc, original value in depc
  * a2: trashed, original value in EXC_TABLE_DOUBLE_SAVE
  * a3: exctable, original value in excsave1
  */
 
-fast_syscall_spill_registers_fixup:
+ENTRY(fast_syscall_spill_registers_fixup)
 
 	rsr	a2, windowbase	# get current windowbase (a2 is saved)
 	xsr	a0, depc	# restore depc and a0
@@ -1131,25 +1136,34 @@ fast_syscall_spill_registers_fixup:
 	/* We need to make sure the current registers (a0-a3) are preserved.
 	 * To do this, we simply set the bit for the current window frame
 	 * in WS, so that the exception handlers save them to the task stack.
+	 *
+	 * Note: we use a3 to set the windowbase, so we take a special care
+	 * of it, saving it in the original _spill_registers frame across
+	 * the exception handler call.
 	 */
 
 	xsr	a3, excsave1	# get spill-mask
-	slli	a2, a3, 1	# shift left by one
+	slli	a3, a3, 1	# shift left by one
+	addi	a3, a3, 1	# set the bit for the current window frame
 
-	slli	a3, a2, 32-WSBITS
-	src	a2, a2, a3	# a1 = xxwww1yyxxxwww1yy......
+	slli	a2, a3, 32-WSBITS
+	src	a2, a3, a2	# a2 = xxwww1yyxxxwww1yy......
 	wsr	a2, windowstart	# set corrected windowstart
 
-	rsr	a3, excsave1
-	l32i	a2, a3, EXC_TABLE_DOUBLE_SAVE	# restore a2
-	l32i	a3, a3, EXC_TABLE_PARAM	# original WB (in user task)
+	srli	a3, a3, 1
+	rsr	a2, excsave1
+	l32i	a2, a2, EXC_TABLE_DOUBLE_SAVE	# restore a2
+	xsr	a2, excsave1
+	s32i	a3, a2, EXC_TABLE_DOUBLE_SAVE	# save a3
+	l32i	a3, a2, EXC_TABLE_PARAM	# original WB (in user task)
+	xsr	a2, excsave1
 
 	/* Return to the original (user task) WINDOWBASE.
 	 * We leave the following frame behind:
 	 * a0, a1, a2	same
-	 * a3:		trashed (saved in excsave_1)
+	 * a3:		trashed (saved in EXC_TABLE_DOUBLE_SAVE)
 	 * depc:	depc (we have to return to that address)
-	 * excsave_1:	a3
+	 * excsave_1:	exctable
 	 */
 
 	wsr	a3, windowbase
@@ -1159,9 +1173,9 @@ fast_syscall_spill_registers_fixup:
 	 *  a0: return address
 	 *  a1: used, stack pointer
 	 *  a2: kernel stack pointer
-	 *  a3: available, saved in EXCSAVE_1
+	 *  a3: available
 	 *  depc: exception address
-	 *  excsave: a3
+	 *  excsave: exctable
 	 * Note: This frame might be the same as above.
 	 */
 
@@ -1181,9 +1195,12 @@ fast_syscall_spill_registers_fixup:
 	rsr	a0, exccause
 	addx4	a0, a0, a3              	# find entry in table
 	l32i	a0, a0, EXC_TABLE_FAST_USER     # load handler
+	l32i	a3, a3, EXC_TABLE_DOUBLE_SAVE
 	jx	a0
 
-fast_syscall_spill_registers_fixup_return:
+ENDPROC(fast_syscall_spill_registers_fixup)
+
+ENTRY(fast_syscall_spill_registers_fixup_return)
 
 	/* When we return here, all registers have been restored (a2: DEPC) */
 
@@ -1191,13 +1208,13 @@ fast_syscall_spill_registers_fixup_return:
 
 	/* Restore fixup handler. */
 
-	xsr	a3, excsave1
-	movi	a2, fast_syscall_spill_registers_fixup
-	s32i	a2, a3, EXC_TABLE_FIXUP
-	s32i	a0, a3, EXC_TABLE_DOUBLE_SAVE
-	rsr	a2, windowbase
-	s32i	a2, a3, EXC_TABLE_PARAM
-	l32i	a2, a3, EXC_TABLE_KSTK
+	rsr	a2, excsave1
+	s32i	a3, a2, EXC_TABLE_DOUBLE_SAVE
+	movi	a3, fast_syscall_spill_registers_fixup
+	s32i	a3, a2, EXC_TABLE_FIXUP
+	rsr	a3, windowbase
+	s32i	a3, a2, EXC_TABLE_PARAM
+	l32i	a2, a2, EXC_TABLE_KSTK
 
 	/* Load WB at the time the exception occurred. */
 
@@ -1206,8 +1223,12 @@ fast_syscall_spill_registers_fixup_return:
 	wsr	a3, windowbase
 	rsync
 
+	rsr	a3, excsave1
+	l32i	a3, a3, EXC_TABLE_DOUBLE_SAVE
+
 	rfde
 
+ENDPROC(fast_syscall_spill_registers_fixup_return)
 
 /*
  * spill all registers.
@@ -1577,7 +1598,7 @@ ENTRY(fast_second_level_miss)
 	rsr	a0, excvaddr
 	bltu	a0, a3, 2f
 
-	addi	a1, a0, -(2 << (DCACHE_ALIAS_ORDER + PAGE_SHIFT))
+	addi	a1, a0, -TLBTEMP_SIZE
 	bgeu	a1, a3, 2f
 
 	/* Check if we have to restore an ITLB mapping. */
@@ -1783,6 +1804,43 @@ ENTRY(system_call)
 
 ENDPROC(system_call)
 
+/*
+ * Spill live registers on the kernel stack macro.
+ *
+ * Entry condition: ps.woe is set, ps.excm is cleared
+ * Exit condition: windowstart has single bit set
+ * May clobber: a12, a13
+ */
+	.macro	spill_registers_kernel
+
+#if XCHAL_NUM_AREGS > 16
+	call12	1f
+	_j	2f
+	retw
+	.align	4
+1:
+	_entry	a1, 48
+	addi	a12, a0, 3
+#if XCHAL_NUM_AREGS > 32
+	.rept	(XCHAL_NUM_AREGS - 32) / 12
+	_entry	a1, 48
+	mov	a12, a0
+	.endr
+#endif
+	_entry	a1, 48
+#if XCHAL_NUM_AREGS % 12 == 0
+	mov	a8, a8
+#elif XCHAL_NUM_AREGS % 12 == 4
+	mov	a12, a12
+#elif XCHAL_NUM_AREGS % 12 == 8
+	mov	a4, a4
+#endif
+	retw
+2:
+#else
+	mov	a12, a12
+#endif
+	.endm
 
 /*
  * Task switch.
@@ -1795,21 +1853,25 @@ ENTRY(_switch_to)
 
 	entry	a1, 16
 
-	mov	a12, a2			# preserve 'prev' (a2)
-	mov	a13, a3			# and 'next' (a3)
+	mov	a11, a3			# and 'next' (a3)
 
 	l32i	a4, a2, TASK_THREAD_INFO
 	l32i	a5, a3, TASK_THREAD_INFO
 
-	save_xtregs_user a4 a6 a8 a9 a10 a11 THREAD_XTREGS_USER
+	save_xtregs_user a4 a6 a8 a9 a12 a13 THREAD_XTREGS_USER
 
-	s32i	a0, a12, THREAD_RA	# save return address
-	s32i	a1, a12, THREAD_SP	# save stack pointer
+#if THREAD_RA > 1020 || THREAD_SP > 1020
+	addi	a10, a2, TASK_THREAD
+	s32i	a0, a10, THREAD_RA - TASK_THREAD	# save return address
+	s32i	a1, a10, THREAD_SP - TASK_THREAD	# save stack pointer
+#else
+	s32i	a0, a2, THREAD_RA	# save return address
+	s32i	a1, a2, THREAD_SP	# save stack pointer
+#endif
 
 	/* Disable ints while we manipulate the stack pointer. */
 
-	movi	a14, (1 << PS_EXCM_BIT) | LOCKLEVEL
-	xsr	a14, ps
+	rsil	a14, LOCKLEVEL
 	rsr	a3, excsave1
 	rsync
 	s32i	a3, a3, EXC_TABLE_FIXUP	/* enter critical section */
@@ -1824,7 +1886,7 @@ ENTRY(_switch_to)
 
 	/* Flush register file. */
 
-	call0	_spill_registers	# destroys a3, a4, and SAR
+	spill_registers_kernel
 
 	/* Set kernel stack (and leave critical section)
 	 * Note: It's save to set it here. The stack will not be overwritten
@@ -1840,13 +1902,12 @@ ENTRY(_switch_to)
 
 	/* restore context of the task 'next' */
 
-	l32i	a0, a13, THREAD_RA	# restore return address
-	l32i	a1, a13, THREAD_SP	# restore stack pointer
+	l32i	a0, a11, THREAD_RA	# restore return address
+	l32i	a1, a11, THREAD_SP	# restore stack pointer
 
-	load_xtregs_user a5 a6 a8 a9 a10 a11 THREAD_XTREGS_USER
+	load_xtregs_user a5 a6 a8 a9 a12 a13 THREAD_XTREGS_USER
 
 	wsr	a14, ps
-	mov	a2, a12			# return 'prev'
 	rsync
 
 	retw

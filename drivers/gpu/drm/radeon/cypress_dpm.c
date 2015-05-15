@@ -1549,7 +1549,7 @@ int cypress_populate_smc_voltage_tables(struct radeon_device *rdev,
 
 		table->voltageMaskTable.highMask[RV770_SMC_VOLTAGEMASK_VDDCI] = 0;
 		table->voltageMaskTable.lowMask[RV770_SMC_VOLTAGEMASK_VDDCI] =
-			cpu_to_be32(eg_pi->vddc_voltage_table.mask_low);
+			cpu_to_be32(eg_pi->vddci_voltage_table.mask_low);
 	}
 
 	return 0;
@@ -2013,12 +2013,6 @@ int cypress_dpm_set_power_state(struct radeon_device *rdev)
 
 	if (eg_pi->pcie_performance_request)
 		cypress_notify_link_speed_change_after_state_change(rdev, new_ps, old_ps);
-
-	ret = rv770_dpm_force_performance_level(rdev, RADEON_DPM_FORCED_LEVEL_AUTO);
-	if (ret) {
-		DRM_ERROR("rv770_dpm_force_performance_level failed\n");
-		return ret;
-	}
 
 	return 0;
 }

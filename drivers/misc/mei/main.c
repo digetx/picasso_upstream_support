@@ -249,19 +249,16 @@ static ssize_t mei_read(struct file *file, char __user *ubuf,
 		mutex_unlock(&dev->device_lock);
 
 		if (wait_event_interruptible(cl->rx_wait,
-			(MEI_READ_COMPLETE == cl->reading_state ||
-			 MEI_FILE_INITIALIZING == cl->state ||
-			 MEI_FILE_DISCONNECTED == cl->state ||
-			 MEI_FILE_DISCONNECTING == cl->state))) {
+				MEI_READ_COMPLETE == cl->reading_state ||
+				mei_cl_is_transitioning(cl))) {
+
 			if (signal_pending(current))
 				return -EINTR;
 			return -ERESTARTSYS;
 		}
 
 		mutex_lock(&dev->device_lock);
-		if (MEI_FILE_INITIALIZING == cl->state ||
-		    MEI_FILE_DISCONNECTED == cl->state ||
-		    MEI_FILE_DISCONNECTING == cl->state) {
+		if (mei_cl_is_transitioning(cl)) {
 			rets = -EBUSY;
 			goto out;
 		}
@@ -651,8 +648,7 @@ static unsigned int mei_poll(struct file *file, poll_table *wait)
 		goto out;
 	}
 
-	if (MEI_WRITE_COMPLETE == cl->writing_state)
-		mask |= (POLLIN | POLLRDNORM);
+	mask |= (POLLIN | POLLRDNORM);
 
 out:
 	mutex_unlock(&dev->device_lock);

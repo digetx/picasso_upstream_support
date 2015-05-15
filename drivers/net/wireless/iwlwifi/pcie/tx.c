@@ -729,7 +729,12 @@ void iwl_trans_pcie_tx_reset(struct iwl_trans *trans)
 	iwl_write_direct32(trans, FH_KW_MEM_ADDR_REG,
 			   trans_pcie->kw.dma >> 4);
 
-	iwl_pcie_tx_start(trans, trans_pcie->scd_base_addr);
+	/*
+	 * Send 0 as the scd_base_addr since the device may have be reset
+	 * while we were in WoWLAN in which case SCD_SRAM_BASE_ADDR will
+	 * contain garbage.
+	 */
+	iwl_pcie_tx_start(trans, 0);
 }
 
 /*
@@ -1102,6 +1107,8 @@ void iwl_trans_pcie_txq_enable(struct iwl_trans *trans, int txq_id, int fifo,
 		 * non-AGG queue.
 		 */
 		iwl_clear_bits_prph(trans, SCD_AGGR_SEL, BIT(txq_id));
+
+		ssn = trans_pcie->txq[txq_id].q.read_ptr;
 	}
 
 	/* Place first TFD at index corresponding to start sequence number.

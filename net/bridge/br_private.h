@@ -126,7 +126,6 @@ struct net_bridge_mdb_entry
 	struct timer_list		timer;
 	struct br_ip			addr;
 	bool				mglist;
-	bool				timer_armed;
 };
 
 struct net_bridge_mdb_htable
@@ -202,13 +201,10 @@ struct net_bridge_port
 
 static inline struct net_bridge_port *br_port_get_rcu(const struct net_device *dev)
 {
-	struct net_bridge_port *port =
-			rcu_dereference_rtnl(dev->rx_handler_data);
-
-	return br_port_exists(dev) ? port : NULL;
+	return rcu_dereference(dev->rx_handler_data);
 }
 
-static inline struct net_bridge_port *br_port_get_rtnl(struct net_device *dev)
+static inline struct net_bridge_port *br_port_get_rtnl(const struct net_device *dev)
 {
 	return br_port_exists(dev) ?
 		rtnl_dereference(dev->rx_handler_data) : NULL;
@@ -312,6 +308,9 @@ struct br_input_skb_cb {
 #ifdef CONFIG_BRIDGE_IGMP_SNOOPING
 	int igmp;
 	int mrouters_only;
+#endif
+#ifdef CONFIG_BRIDGE_VLAN_FILTERING
+	bool vlan_filtered;
 #endif
 };
 
@@ -445,6 +444,16 @@ extern netdev_features_t br_features_recompute(struct net_bridge *br,
 /* br_input.c */
 extern int br_handle_frame_finish(struct sk_buff *skb);
 extern rx_handler_result_t br_handle_frame(struct sk_buff **pskb);
+
+static inline bool br_rx_handler_check_rcu(const struct net_device *dev)
+{
+	return rcu_dereference(dev->rx_handler) == br_handle_frame;
+}
+
+static inline struct net_bridge_port *br_port_get_check_rcu(const struct net_device *dev)
+{
+	return br_rx_handler_check_rcu(dev) ? br_port_get_rcu(dev) : NULL;
+}
 
 /* br_ioctl.c */
 extern int br_dev_ioctl(struct net_device *dev, struct ifreq *rq, int cmd);
@@ -599,6 +608,7 @@ extern bool br_allowed_ingress(struct net_bridge *br, struct net_port_vlans *v,
 extern bool br_allowed_egress(struct net_bridge *br,
 			      const struct net_port_vlans *v,
 			      const struct sk_buff *skb);
+bool br_should_learn(struct net_bridge_port *p, struct sk_buff *skb, u16 *vid);
 extern struct sk_buff *br_handle_vlan(struct net_bridge *br,
 				      const struct net_port_vlans *v,
 				      struct sk_buff *skb);
@@ -646,9 +656,7 @@ static inline u16 br_get_pvid(const struct net_port_vlans *v)
 	 * vid wasn't set
 	 */
 	smp_rmb();
-	return (v->pvid & VLAN_TAG_PRESENT) ?
-			(v->pvid & ~VLAN_TAG_PRESENT) :
-			VLAN_N_VID;
+	return v->pvid ?: VLAN_N_VID;
 }
 
 #else
@@ -663,6 +671,12 @@ static inline bool br_allowed_ingress(struct net_bridge *br,
 static inline bool br_allowed_egress(struct net_bridge *br,
 				     const struct net_port_vlans *v,
 				     const struct sk_buff *skb)
+{
+	return true;
+}
+
+static inline bool br_should_learn(struct net_bridge_port *p,
+				   struct sk_buff *skb, u16 *vid)
 {
 	return true;
 }
@@ -746,6 +760,7 @@ extern struct net_bridge_port *br_get_port(struct net_bridge *br,
 extern void br_init_port(struct net_bridge_port *p);
 extern void br_become_designated_port(struct net_bridge_port *p);
 
+extern void __br_set_forward_delay(struct net_bridge *br, unsigned long t);
 extern int br_set_forward_delay(struct net_bridge *br, unsigned long x);
 extern int br_set_hello_time(struct net_bridge *br, unsigned long x);
 extern int br_set_max_age(struct net_bridge *br, unsigned long x);

@@ -778,8 +778,16 @@ static void ahci_start_port(struct ata_port *ap)
 				rc = ap->ops->transmit_led_message(ap,
 							       emp->led_state,
 							       4);
+				/*
+				 * If busy, give a breather but do not
+				 * release EH ownership by using msleep()
+				 * instead of ata_msleep().  EM Transmit
+				 * bit is busy for the whole host and
+				 * releasing ownership will cause other
+				 * ports to fail the same way.
+				 */
 				if (rc == -EBUSY)
-					ata_msleep(ap, 1);
+					msleep(1);
 				else
 					break;
 			}
@@ -1267,9 +1275,11 @@ int ahci_do_softreset(struct ata_link *link, unsigned int *class,
 {
 	struct ata_port *ap = link->ap;
 	struct ahci_host_priv *hpriv = ap->host->private_data;
+	struct ahci_port_priv *pp = ap->private_data;
 	const char *reason = NULL;
 	unsigned long now, msecs;
 	struct ata_taskfile tf;
+	bool fbs_disabled = false;
 	int rc;
 
 	DPRINTK("ENTER\n");
@@ -1278,6 +1288,16 @@ int ahci_do_softreset(struct ata_link *link, unsigned int *class,
 	rc = ahci_kick_engine(ap);
 	if (rc && rc != -EOPNOTSUPP)
 		ata_link_warn(link, "failed to reset engine (errno=%d)\n", rc);
+
+	/*
+	 * According to AHCI-1.2 9.3.9: if FBS is enable, software shall
+	 * clear PxFBS.EN to '0' prior to issuing software reset to devices
+	 * that is attached to port multiplier.
+	 */
+	if (!ata_is_host_link(link) && pp->fbs_enabled) {
+		ahci_disable_fbs(ap);
+		fbs_disabled = true;
+	}
 
 	ata_tf_init(link->device, &tf);
 
@@ -1318,6 +1338,10 @@ int ahci_do_softreset(struct ata_link *link, unsigned int *class,
 		goto fail;
 	} else
 		*class = ahci_dev_classify(ap);
+
+	/* re-enable FBS if disabled before */
+	if (fbs_disabled)
+		ahci_enable_fbs(ap);
 
 	DPRINTK("EXIT, class=%u\n", *class);
 	return 0;

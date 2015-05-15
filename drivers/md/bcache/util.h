@@ -417,8 +417,8 @@ do {									\
 			  average_frequency,	frequency_units);	\
 	__print_time_stat(stats, name,					\
 			  average_duration,	duration_units);	\
-	__print_time_stat(stats, name,					\
-			  max_duration,		duration_units);	\
+	sysfs_print(name ## _ ##max_duration ## _ ## duration_units,	\
+			div_u64((stats)->max_duration, NSEC_PER_ ## duration_units));\
 									\
 	sysfs_print(name ## _last_ ## frequency_units, (stats)->last	\
 		    ? div_s64(local_clock() - (stats)->last,		\
@@ -450,17 +450,23 @@ read_attribute(name ## _last_ ## frequency_units)
 	(ewma) >> factor;						\
 })
 
-struct ratelimit {
+struct bch_ratelimit {
+	/* Next time we want to do some work, in nanoseconds */
 	uint64_t		next;
+
+	/*
+	 * Rate at which we want to do work, in units per nanosecond
+	 * The units here correspond to the units passed to bch_next_delay()
+	 */
 	unsigned		rate;
 };
 
-static inline void ratelimit_reset(struct ratelimit *d)
+static inline void bch_ratelimit_reset(struct bch_ratelimit *d)
 {
 	d->next = local_clock();
 }
 
-unsigned bch_next_delay(struct ratelimit *d, uint64_t done);
+uint64_t bch_next_delay(struct bch_ratelimit *d, uint64_t done);
 
 #define __DIV_SAFE(n, d, zero)						\
 ({									\

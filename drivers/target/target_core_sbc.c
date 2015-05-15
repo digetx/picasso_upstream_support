@@ -80,7 +80,7 @@ sbc_emulate_readcapacity(struct se_cmd *cmd)
 		transport_kunmap_data_sg(cmd);
 	}
 
-	target_complete_cmd(cmd, GOOD);
+	target_complete_cmd_with_length(cmd, GOOD, 8);
 	return 0;
 }
 
@@ -118,7 +118,7 @@ sbc_emulate_readcapacity_16(struct se_cmd *cmd)
 		transport_kunmap_data_sg(cmd);
 	}
 
-	target_complete_cmd(cmd, GOOD);
+	target_complete_cmd_with_length(cmd, GOOD, 32);
 	return 0;
 }
 
@@ -250,6 +250,8 @@ static inline unsigned long long transport_lba_64_ext(unsigned char *cdb)
 static sense_reason_t
 sbc_setup_write_same(struct se_cmd *cmd, unsigned char *flags, struct sbc_ops *ops)
 {
+	struct se_device *dev = cmd->se_dev;
+	sector_t end_lba = dev->transport->get_blocks(dev) + 1;
 	unsigned int sectors = sbc_get_write_same_sectors(cmd);
 
 	if ((flags[0] & 0x04) || (flags[0] & 0x02)) {
@@ -261,6 +263,21 @@ sbc_setup_write_same(struct se_cmd *cmd, unsigned char *flags, struct sbc_ops *o
 	if (sectors > cmd->se_dev->dev_attrib.max_write_same_len) {
 		pr_warn("WRITE_SAME sectors: %u exceeds max_write_same_len: %u\n",
 			sectors, cmd->se_dev->dev_attrib.max_write_same_len);
+		return TCM_INVALID_CDB_FIELD;
+	}
+	/*
+	 * Sanity check for LBA wrap and request past end of device.
+	 */
+	if (((cmd->t_task_lba + sectors) < cmd->t_task_lba) ||
+	    ((cmd->t_task_lba + sectors) > end_lba)) {
+		pr_err("WRITE_SAME exceeds last lba %llu (lba %llu, sectors %u)\n",
+		       (unsigned long long)end_lba, cmd->t_task_lba, sectors);
+		return TCM_ADDRESS_OUT_OF_RANGE;
+	}
+
+	/* We always have ANC_SUP == 0 so setting ANCHOR is always an error */
+	if (flags[0] & 0x10) {
+		pr_warn("WRITE SAME with ANCHOR not supported\n");
 		return TCM_INVALID_CDB_FIELD;
 	}
 	/*
@@ -349,7 +366,16 @@ static sense_reason_t compare_and_write_post(struct se_cmd *cmd)
 {
 	struct se_device *dev = cmd->se_dev;
 
-	cmd->se_cmd_flags |= SCF_COMPARE_AND_WRITE_POST;
+	/*
+	 * Only set SCF_COMPARE_AND_WRITE_POST to force a response fall-through
+	 * within target_complete_ok_work() if the command was successfully
+	 * sent to the backend driver.
+	 */
+	spin_lock_irq(&cmd->t_state_lock);
+	if ((cmd->transport_state & CMD_T_SENT) && !cmd->scsi_status)
+		cmd->se_cmd_flags |= SCF_COMPARE_AND_WRITE_POST;
+	spin_unlock_irq(&cmd->t_state_lock);
+
 	/*
 	 * Unlock ->caw_sem originally obtained during sbc_compare_and_write()
 	 * before the original READ I/O submission.
@@ -363,7 +389,7 @@ static sense_reason_t compare_and_write_callback(struct se_cmd *cmd)
 {
 	struct se_device *dev = cmd->se_dev;
 	struct scatterlist *write_sg = NULL, *sg;
-	unsigned char *buf, *addr;
+	unsigned char *buf = NULL, *addr;
 	struct sg_mapping_iter m;
 	unsigned int offset = 0, len;
 	unsigned int nlbas = cmd->t_task_nolb;
@@ -378,6 +404,15 @@ static sense_reason_t compare_and_write_callback(struct se_cmd *cmd)
 	 */
 	if (!cmd->t_data_sg || !cmd->t_bidi_data_sg)
 		return TCM_NO_SENSE;
+	/*
+	 * Immediately exit + release dev->caw_sem if command has already
+	 * been failed with a non-zero SCSI status.
+	 */
+	if (cmd->scsi_status) {
+		pr_err("compare_and_write_callback: non zero scsi_status:"
+			" 0x%02x\n", cmd->scsi_status);
+		goto out;
+	}
 
 	buf = kzalloc(cmd->data_length, GFP_KERNEL);
 	if (!buf) {
@@ -386,13 +421,14 @@ static sense_reason_t compare_and_write_callback(struct se_cmd *cmd)
 		goto out;
 	}
 
-	write_sg = kzalloc(sizeof(struct scatterlist) * cmd->t_data_nents,
+	write_sg = kmalloc(sizeof(struct scatterlist) * cmd->t_data_nents,
 			   GFP_KERNEL);
 	if (!write_sg) {
 		pr_err("Unable to allocate compare_and_write sg\n");
 		ret = TCM_OUT_OF_RESOURCES;
 		goto out;
 	}
+	sg_init_table(write_sg, cmd->t_data_nents);
 	/*
 	 * Setup verify and write data payloads from total NumberLBAs.
 	 */
@@ -508,6 +544,12 @@ sbc_compare_and_write(struct se_cmd *cmd)
 		cmd->transport_complete_callback = NULL;
 		return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 	}
+	/*
+	 * Reset cmd->data_length to individual block_size in order to not
+	 * confuse backend drivers that depend on this value matching the
+	 * size of the I/O being submitted.
+	 */
+	cmd->data_length = cmd->t_task_nolb * dev->dev_attrib.block_size;
 
 	ret = cmd->execute_rw(cmd, cmd->t_bidi_data_sg, cmd->t_bidi_data_nents,
 			      DMA_FROM_DEVICE);
@@ -799,23 +841,9 @@ sbc_parse_cdb(struct se_cmd *cmd, struct sbc_ops *ops)
 	if (cmd->se_cmd_flags & SCF_SCSI_DATA_CDB) {
 		unsigned long long end_lba;
 
-		if (sectors > dev->dev_attrib.fabric_max_sectors) {
-			printk_ratelimited(KERN_ERR "SCSI OP %02xh with too"
-				" big sectors %u exceeds fabric_max_sectors:"
-				" %u\n", cdb[0], sectors,
-				dev->dev_attrib.fabric_max_sectors);
-			return TCM_INVALID_CDB_FIELD;
-		}
-		if (sectors > dev->dev_attrib.hw_max_sectors) {
-			printk_ratelimited(KERN_ERR "SCSI OP %02xh with too"
-				" big sectors %u exceeds backend hw_max_sectors:"
-				" %u\n", cdb[0], sectors,
-				dev->dev_attrib.hw_max_sectors);
-			return TCM_INVALID_CDB_FIELD;
-		}
-
 		end_lba = dev->transport->get_blocks(dev) + 1;
-		if (cmd->t_task_lba + sectors > end_lba) {
+		if (((cmd->t_task_lba + sectors) < cmd->t_task_lba) ||
+		    ((cmd->t_task_lba + sectors) > end_lba)) {
 			pr_err("cmd exceeds last lba %llu "
 				"(lba %llu, sectors %u)\n",
 				end_lba, cmd->t_task_lba, sectors);

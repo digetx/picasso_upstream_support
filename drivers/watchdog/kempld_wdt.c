@@ -35,7 +35,7 @@
 #define KEMPLD_WDT_STAGE_TIMEOUT(x)	(0x1b + (x) * 4)
 #define KEMPLD_WDT_STAGE_CFG(x)		(0x18 + (x))
 #define STAGE_CFG_GET_PRESCALER(x)	(((x) & 0x30) >> 4)
-#define STAGE_CFG_SET_PRESCALER(x)	(((x) & 0x30) << 4)
+#define STAGE_CFG_SET_PRESCALER(x)	(((x) & 0x3) << 4)
 #define STAGE_CFG_PRESCALER_MASK	0x30
 #define STAGE_CFG_ACTION_MASK		0x7
 #define STAGE_CFG_ASSERT		(1 << 3)
@@ -163,7 +163,7 @@ static int kempld_wdt_set_stage_timeout(struct kempld_wdt_data *wdt_data,
 	kempld_get_mutex(pld);
 	stage_cfg = kempld_read8(pld, KEMPLD_WDT_STAGE_CFG(stage->id));
 	stage_cfg &= ~STAGE_CFG_PRESCALER_MASK;
-	stage_cfg |= STAGE_CFG_SET_PRESCALER(prescaler);
+	stage_cfg |= STAGE_CFG_SET_PRESCALER(PRESCALER_21);
 	kempld_write8(pld, KEMPLD_WDT_STAGE_CFG(stage->id), stage_cfg);
 	kempld_write32(pld, KEMPLD_WDT_STAGE_TIMEOUT(stage->id),
 			stage_timeout);

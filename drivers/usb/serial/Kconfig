@@ -59,8 +59,9 @@ config USB_SERIAL_SIMPLE
 	  driver.  Specifically, it supports:
 		- Suunto ANT+ USB device.
 		- Fundamental Software dongle.
+		- Google USB serial devices
 		- HP4x calculators
-		- a number of Motoroloa phones
+		- a number of Motorola phones
 		- Siemens USB/MPI adapter.
 		- ViVOtech ViVOpay USB device.
 		- Infineon Modem Flashloader USB interface

@@ -3571,7 +3571,7 @@ static void ixgbe_configure_rx(struct ixgbe_adapter *adapter)
 {
 	struct ixgbe_hw *hw = &adapter->hw;
 	int i;
-	u32 rxctrl;
+	u32 rxctrl, rfctl;
 
 	/* disable receives while setting up the descriptors */
 	rxctrl = IXGBE_READ_REG(hw, IXGBE_RXCTRL);
@@ -3579,6 +3579,13 @@ static void ixgbe_configure_rx(struct ixgbe_adapter *adapter)
 
 	ixgbe_setup_psrtype(adapter);
 	ixgbe_setup_rdrxctl(adapter);
+
+	/* RSC Setup */
+	rfctl = IXGBE_READ_REG(hw, IXGBE_RFCTL);
+	rfctl &= ~IXGBE_RFCTL_RSC_DIS;
+	if (!(adapter->flags2 & IXGBE_FLAG2_RSC_ENABLED))
+		rfctl |= IXGBE_RFCTL_RSC_DIS;
+	IXGBE_WRITE_REG(hw, IXGBE_RFCTL, rfctl);
 
 	/* Program registers for the distribution of queues */
 	ixgbe_setup_mrqc(adapter);
@@ -3818,14 +3825,6 @@ void ixgbe_set_rx_mode(struct net_device *netdev)
 		if (netdev->flags & IFF_ALLMULTI) {
 			fctrl |= IXGBE_FCTRL_MPE;
 			vmolr |= IXGBE_VMOLR_MPE;
-		} else {
-			/*
-			 * Write addresses to the MTA, if the attempt fails
-			 * then we should just turn on promiscuous mode so
-			 * that we can at least receive multicast traffic
-			 */
-			hw->mac.ops.update_mc_addr_list(hw, netdev);
-			vmolr |= IXGBE_VMOLR_ROMPE;
 		}
 		ixgbe_vlan_filter_enable(adapter);
 		hw->addr_ctrl.user_set_promisc = false;
@@ -3841,6 +3840,13 @@ void ixgbe_set_rx_mode(struct net_device *netdev)
 		fctrl |= IXGBE_FCTRL_UPE;
 		vmolr |= IXGBE_VMOLR_ROPE;
 	}
+
+	/* Write addresses to the MTA, if the attempt fails
+	 * then we should just turn on promiscuous mode so
+	 * that we can at least receive multicast traffic
+	 */
+	hw->mac.ops.update_mc_addr_list(hw, netdev);
+	vmolr |= IXGBE_VMOLR_ROMPE;
 
 	if (adapter->num_vfs)
 		ixgbe_restore_vf_multicasts(adapter);
@@ -3886,15 +3892,13 @@ static void ixgbe_napi_disable_all(struct ixgbe_adapter *adapter)
 {
 	int q_idx;
 
-	local_bh_disable(); /* for ixgbe_qv_lock_napi() */
 	for (q_idx = 0; q_idx < adapter->num_q_vectors; q_idx++) {
 		napi_disable(&adapter->q_vector[q_idx]->napi);
-		while (!ixgbe_qv_lock_napi(adapter->q_vector[q_idx])) {
+		while (!ixgbe_qv_disable(adapter->q_vector[q_idx])) {
 			pr_info("QV %d locked\n", q_idx);
-			mdelay(1);
+			usleep_range(1000, 20000);
 		}
 	}
-	local_bh_enable();
 }
 
 #ifdef CONFIG_IXGBE_DCB
@@ -5993,8 +5997,16 @@ static void ixgbe_sfp_link_config_subtask(struct ixgbe_adapter *adapter)
 	adapter->flags &= ~IXGBE_FLAG_NEED_LINK_CONFIG;
 
 	speed = hw->phy.autoneg_advertised;
-	if ((!speed) && (hw->mac.ops.get_link_capabilities))
+	if ((!speed) && (hw->mac.ops.get_link_capabilities)) {
 		hw->mac.ops.get_link_capabilities(hw, &speed, &autoneg);
+
+		/* setup the highest link when no autoneg */
+		if (!autoneg) {
+			if (speed & IXGBE_LINK_SPEED_10GB_FULL)
+				speed = IXGBE_LINK_SPEED_10GB_FULL;
+		}
+	}
+
 	if (hw->mac.ops.setup_link)
 		hw->mac.ops.setup_link(hw, speed, true);
 
@@ -7475,19 +7487,14 @@ static int ixgbe_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (err)
 		return err;
 
-	if (!dma_set_mask(&pdev->dev, DMA_BIT_MASK(64)) &&
-	    !dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(64))) {
+	if (!dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64))) {
 		pci_using_dac = 1;
 	} else {
-		err = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
+		err = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(32));
 		if (err) {
-			err = dma_set_coherent_mask(&pdev->dev,
-						    DMA_BIT_MASK(32));
-			if (err) {
-				dev_err(&pdev->dev,
-					"No usable DMA configuration, aborting\n");
-				goto err_dma;
-			}
+			dev_err(&pdev->dev,
+				"No usable DMA configuration, aborting\n");
+			goto err_dma;
 		}
 		pci_using_dac = 0;
 	}

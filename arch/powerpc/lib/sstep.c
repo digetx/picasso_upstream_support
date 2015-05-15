@@ -1397,7 +1397,7 @@ int __kprobes emulate_step(struct pt_regs *regs, unsigned int instr)
 				regs->gpr[rd] = byterev_4(val);
 			goto ldst_done;
 
-#ifdef CONFIG_PPC_CPU
+#ifdef CONFIG_PPC_FPU
 		case 535:	/* lfsx */
 		case 567:	/* lfsux */
 			if (!(regs->msr & MSR_FP))
@@ -1505,6 +1505,7 @@ int __kprobes emulate_step(struct pt_regs *regs, unsigned int instr)
 		 */
 		if ((ra == 1) && !(regs->msr & MSR_PR) \
 			&& (val3 >= (regs->gpr[1] - STACK_INT_FRAME_SIZE))) {
+#ifdef CONFIG_PPC32
 			/*
 			 * Check if we will touch kernel sack overflow
 			 */
@@ -1513,7 +1514,7 @@ int __kprobes emulate_step(struct pt_regs *regs, unsigned int instr)
 				err = -EINVAL;
 				break;
 			}
-
+#endif /* CONFIG_PPC32 */
 			/*
 			 * Check if we already set since that means we'll
 			 * lose the previous value.

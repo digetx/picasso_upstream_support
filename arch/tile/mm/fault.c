@@ -149,8 +149,6 @@ static inline int vmalloc_fault(pgd_t *pgd, unsigned long address)
 	pmd_k = vmalloc_sync_one(pgd, address);
 	if (!pmd_k)
 		return -1;
-	if (pmd_huge(*pmd_k))
-		return 0;   /* support TILE huge_vmap() API */
 	pte_k = pte_offset_kernel(pmd_k, address);
 	if (!pte_present(*pte_k))
 		return -1;
@@ -446,6 +444,8 @@ good_area:
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
+		else if (fault & VM_FAULT_SIGSEGV)
+			goto bad_area;
 		else if (fault & VM_FAULT_SIGBUS)
 			goto do_sigbus;
 		BUG();

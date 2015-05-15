@@ -256,6 +256,8 @@ void perf_tool__fill_defaults(struct perf_tool *tool)
 		tool->sample = process_event_sample_stub;
 	if (tool->mmap == NULL)
 		tool->mmap = process_event_stub;
+	if (tool->mmap2 == NULL)
+		tool->mmap2 = process_event_stub;
 	if (tool->comm == NULL)
 		tool->comm = process_event_stub;
 	if (tool->fork == NULL)
@@ -531,6 +533,9 @@ static int flush_sample_queue(struct perf_session *s,
 		return 0;
 
 	list_for_each_entry_safe(iter, tmp, head, list) {
+		if (session_done())
+			return 0;
+
 		if (iter->timestamp > limit)
 			break;
 
@@ -676,8 +681,7 @@ int perf_session_queue_event(struct perf_session *s, union perf_event *event,
 		return -ETIME;
 
 	if (timestamp < s->ordered_samples.last_flush) {
-		printf("Warning: Timestamp below last timeslice flush\n");
-		return -EINVAL;
+		s->stats.nr_unordered_events++;
 	}
 
 	if (!list_empty(sc)) {
@@ -865,6 +869,7 @@ static struct machine *
 					       struct perf_sample *sample)
 {
 	const u8 cpumode = event->header.misc & PERF_RECORD_MISC_CPUMODE_MASK;
+	struct machine *machine;
 
 	if (perf_guest &&
 	    ((cpumode == PERF_RECORD_MISC_GUEST_KERNEL) ||
@@ -877,7 +882,11 @@ static struct machine *
 		else
 			pid = sample->pid;
 
-		return perf_session__findnew_machine(session, pid);
+		machine = perf_session__find_machine(session, pid);
+		if (!machine)
+			machine = perf_session__findnew_machine(session,
+						DEFAULT_GUEST_KERNEL_ID);
+		return machine;
 	}
 
 	return &session->machines.host;
@@ -1158,9 +1167,10 @@ static void perf_session__warn_about_errors(const struct perf_session *session,
 			    "Do you have a KVM guest running and not using 'perf kvm'?\n",
 			    session->stats.nr_unprocessable_samples);
 	}
+	if (session->stats.nr_unordered_events != 0)
+		ui__warning("%u out of order events recorded.\n", session->stats.nr_unordered_events);
 }
 
-#define session_done()	(*(volatile int *)(&session_done))
 volatile int session_done;
 
 static int __perf_session__process_pipe_events(struct perf_session *self,
@@ -1308,7 +1318,7 @@ int __perf_session__process_events(struct perf_session *session,
 	file_offset = page_offset;
 	head = data_offset - page_offset;
 
-	if (data_offset + data_size < file_size)
+	if (data_size && (data_offset + data_size < file_size))
 		file_size = data_offset + data_size;
 
 	progress_next = file_size / 16;
@@ -1372,10 +1382,13 @@ more:
 				    "Processing events...");
 	}
 
+	err = 0;
+	if (session_done())
+		goto out_err;
+
 	if (file_pos < file_size)
 		goto more;
 
-	err = 0;
 	/* do the final flush for ordered samples */
 	session->ordered_samples.next_flush = ULLONG_MAX;
 	err = flush_sample_queue(session, tool);

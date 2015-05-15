@@ -23,6 +23,7 @@
 #include <linux/slab.h>
 #include <linux/mount.h>
 #include <linux/magic.h>
+#include <linux/namei.h>
 
 #include <asm/uaccess.h>
 
@@ -288,10 +289,14 @@ static int proc_reg_mmap(struct file *file, struct vm_area_struct *vma)
 static unsigned long proc_reg_get_unmapped_area(struct file *file, unsigned long orig_addr, unsigned long len, unsigned long pgoff, unsigned long flags)
 {
 	struct proc_dir_entry *pde = PDE(file_inode(file));
-	int rv = -EIO;
-	unsigned long (*get_unmapped_area)(struct file *, unsigned long, unsigned long, unsigned long, unsigned long);
+	unsigned long rv = -EIO;
+	unsigned long (*get_unmapped_area)(struct file *, unsigned long, unsigned long, unsigned long, unsigned long) = NULL;
 	if (use_pde(pde)) {
-		get_unmapped_area = pde->proc_fops->get_unmapped_area;
+#ifdef CONFIG_MMU
+		get_unmapped_area = current->mm->get_unmapped_area;
+#endif
+		if (pde->proc_fops->get_unmapped_area)
+			get_unmapped_area = pde->proc_fops->get_unmapped_area;
 		if (get_unmapped_area)
 			rv = get_unmapped_area(file, orig_addr, len, pgoff, flags);
 		unuse_pde(pde);
@@ -388,6 +393,26 @@ static const struct file_operations proc_reg_file_ops_no_compat = {
 	.release	= proc_reg_release,
 };
 #endif
+
+static void *proc_follow_link(struct dentry *dentry, struct nameidata *nd)
+{
+	struct proc_dir_entry *pde = PDE(dentry->d_inode);
+	if (unlikely(!use_pde(pde)))
+		return ERR_PTR(-EINVAL);
+	nd_set_link(nd, pde->data);
+	return pde;
+}
+
+static void proc_put_link(struct dentry *dentry, struct nameidata *nd, void *p)
+{
+	unuse_pde(p);
+}
+
+const struct inode_operations proc_link_inode_operations = {
+	.readlink	= generic_readlink,
+	.follow_link	= proc_follow_link,
+	.put_link	= proc_put_link,
+};
 
 struct inode *proc_get_inode(struct super_block *sb, struct proc_dir_entry *de)
 {

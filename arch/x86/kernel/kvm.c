@@ -280,7 +280,14 @@ do_async_page_fault(struct pt_regs *regs, unsigned long error_code)
 static void __init paravirt_ops_setup(void)
 {
 	pv_info.name = "KVM";
-	pv_info.paravirt_enabled = 1;
+
+	/*
+	 * KVM isn't paravirt in the sense of paravirt_enabled.  A KVM
+	 * guest kernel works like a bare metal kernel with additional
+	 * features, and paravirt_enabled is about features that are
+	 * missing.
+	 */
+	pv_info.paravirt_enabled = 0;
 
 	if (kvm_para_has_feature(KVM_FEATURE_NOP_IO_DELAY))
 		pv_cpu_ops.io_delay = kvm_io_delay;
@@ -500,6 +507,38 @@ void __init kvm_guest_init(void)
 #endif
 }
 
+static noinline uint32_t __kvm_cpuid_base(void)
+{
+	if (boot_cpu_data.cpuid_level < 0)
+		return 0;	/* So we don't blow up on old processors */
+
+	if (cpu_has_hypervisor)
+		return hypervisor_cpuid_base("KVMKVMKVM\0\0\0", 0);
+
+	return 0;
+}
+
+static inline uint32_t kvm_cpuid_base(void)
+{
+	static int kvm_cpuid_base = -1;
+
+	if (kvm_cpuid_base == -1)
+		kvm_cpuid_base = __kvm_cpuid_base();
+
+	return kvm_cpuid_base;
+}
+
+bool kvm_para_available(void)
+{
+	return kvm_cpuid_base() != 0;
+}
+EXPORT_SYMBOL_GPL(kvm_para_available);
+
+unsigned int kvm_arch_para_features(void)
+{
+	return cpuid_eax(kvm_cpuid_base() | KVM_CPUID_FEATURES);
+}
+
 static uint32_t __init kvm_detect(void)
 {
 	return kvm_cpuid_base();
@@ -609,7 +648,7 @@ static struct dentry *d_kvm_debug;
 
 struct dentry *kvm_init_debugfs(void)
 {
-	d_kvm_debug = debugfs_create_dir("kvm", NULL);
+	d_kvm_debug = debugfs_create_dir("kvm-guest", NULL);
 	if (!d_kvm_debug)
 		printk(KERN_WARNING "Could not create 'kvm' debugfs directory\n");
 
@@ -775,11 +814,22 @@ void __init kvm_spinlock_init(void)
 	if (!kvm_para_has_feature(KVM_FEATURE_PV_UNHALT))
 		return;
 
-	printk(KERN_INFO "KVM setup paravirtual spinlock\n");
-
-	static_key_slow_inc(&paravirt_ticketlocks_enabled);
-
 	pv_lock_ops.lock_spinning = PV_CALLEE_SAVE(kvm_lock_spinning);
 	pv_lock_ops.unlock_kick = kvm_unlock_kick;
 }
+
+static __init int kvm_spinlock_init_jump(void)
+{
+	if (!kvm_para_available())
+		return 0;
+	if (!kvm_para_has_feature(KVM_FEATURE_PV_UNHALT))
+		return 0;
+
+	static_key_slow_inc(&paravirt_ticketlocks_enabled);
+	printk(KERN_INFO "KVM setup paravirtual spinlock\n");
+
+	return 0;
+}
+early_initcall(kvm_spinlock_init_jump);
+
 #endif	/* CONFIG_PARAVIRT_SPINLOCKS */

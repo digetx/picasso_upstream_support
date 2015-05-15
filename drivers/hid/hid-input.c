@@ -192,6 +192,7 @@ static int hidinput_setkeycode(struct input_dev *dev,
 	return -EINVAL;
 }
 
+
 /**
  * hidinput_calc_abs_res - calculate an absolute axis resolution
  * @field: the HID report field to calculate resolution for
@@ -234,23 +235,17 @@ __s32 hidinput_calc_abs_res(const struct hid_field *field, __u16 code)
 	case ABS_MT_TOOL_Y:
 	case ABS_MT_TOUCH_MAJOR:
 	case ABS_MT_TOUCH_MINOR:
-		if (field->unit & 0xffffff00)		/* Not a length */
-			return 0;
-		unit_exponent += hid_snto32(field->unit >> 4, 4) - 1;
-		switch (field->unit & 0xf) {
-		case 0x1:				/* If centimeters */
+		if (field->unit == 0x11) {		/* If centimeters */
 			/* Convert to millimeters */
 			unit_exponent += 1;
-			break;
-		case 0x3:				/* If inches */
+		} else if (field->unit == 0x13) {	/* If inches */
 			/* Convert to millimeters */
 			prev = physical_extents;
 			physical_extents *= 254;
 			if (physical_extents < prev)
 				return 0;
 			unit_exponent -= 1;
-			break;
-		default:
+		} else {
 			return 0;
 		}
 		break;
@@ -311,10 +306,16 @@ static enum power_supply_property hidinput_battery_props[] = {
 
 static const struct hid_device_id hid_battery_quirks[] = {
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE,
-			USB_DEVICE_ID_APPLE_ALU_WIRELESS_2009_ISO),
-	HID_BATTERY_QUIRK_PERCENT | HID_BATTERY_QUIRK_FEATURE },
+		USB_DEVICE_ID_APPLE_ALU_WIRELESS_2009_ISO),
+	  HID_BATTERY_QUIRK_PERCENT | HID_BATTERY_QUIRK_FEATURE },
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE,
-			       USB_DEVICE_ID_APPLE_ALU_WIRELESS_2011_ANSI),
+		USB_DEVICE_ID_APPLE_ALU_WIRELESS_2009_ANSI),
+	  HID_BATTERY_QUIRK_PERCENT | HID_BATTERY_QUIRK_FEATURE },
+	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE,
+		USB_DEVICE_ID_APPLE_ALU_WIRELESS_2011_ANSI),
+	  HID_BATTERY_QUIRK_PERCENT | HID_BATTERY_QUIRK_FEATURE },
+	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE,
+			       USB_DEVICE_ID_APPLE_ALU_WIRELESS_2011_ISO),
 	  HID_BATTERY_QUIRK_PERCENT | HID_BATTERY_QUIRK_FEATURE },
 	{ HID_BLUETOOTH_DEVICE(USB_VENDOR_ID_APPLE,
 		USB_DEVICE_ID_APPLE_ALU_WIRELESS_ANSI),
@@ -483,6 +484,10 @@ static void hidinput_configure_usage(struct hid_input *hidinput, struct hid_fiel
 	field->hidinput = hidinput;
 
 	if (field->flags & HID_MAIN_ITEM_CONSTANT)
+		goto ignore;
+
+	/* Ignore if report count is out of bounds. */
+	if (field->report_count < 1)
 		goto ignore;
 
 	/* only LED usages are supported in output fields */
@@ -1064,6 +1069,23 @@ void hidinput_hid_event(struct hid_device *hid, struct hid_field *field, struct 
 		return;
 	}
 
+	/*
+	 * Ignore reports for absolute data if the data didn't change. This is
+	 * not only an optimization but also fixes 'dead' key reports. Some
+	 * RollOver implementations for localized keys (like BACKSLASH/PIPE; HID
+	 * 0x31 and 0x32) report multiple keys, even though a localized keyboard
+	 * can only have one of them physically available. The 'dead' keys
+	 * report constant 0. As all map to the same keycode, they'd confuse
+	 * the input layer. If we filter the 'dead' keys on the HID level, we
+	 * skip the keycode translation and only forward real events.
+	 */
+	if (!(field->flags & (HID_MAIN_ITEM_RELATIVE |
+	                      HID_MAIN_ITEM_BUFFERED_BYTE)) &&
+			      (field->flags & HID_MAIN_ITEM_VARIABLE) &&
+	    usage->usage_index < field->maxusage &&
+	    value == field->value[usage->usage_index])
+		return;
+
 	/* report the usage code as scancode if the key status has changed */
 	if (usage->type == EV_KEY && !!test_bit(usage->code, input->key) != value)
 		input_event(input, EV_MSC, MSC_SCAN, usage->hid);
@@ -1236,7 +1258,11 @@ static void report_features(struct hid_device *hid)
 
 	rep_enum = &hid->report_enum[HID_FEATURE_REPORT];
 	list_for_each_entry(rep, &rep_enum->report_list, list)
-		for (i = 0; i < rep->maxfield; i++)
+		for (i = 0; i < rep->maxfield; i++) {
+			/* Ignore if report count is out of bounds. */
+			if (rep->field[i]->report_count < 1)
+				continue;
+
 			for (j = 0; j < rep->field[i]->maxusage; j++) {
 				/* Verify if Battery Strength feature is available */
 				hidinput_setup_battery(hid, HID_FEATURE_REPORT, rep->field[i]);
@@ -1245,6 +1271,7 @@ static void report_features(struct hid_device *hid)
 					drv->feature_mapping(hid, rep->field[i],
 							     rep->field[i]->usage + j);
 			}
+		}
 }
 
 static struct hid_input *hidinput_allocate(struct hid_device *hid)

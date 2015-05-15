@@ -146,6 +146,8 @@ static const struct ci_pt_config_reg didt_config_ci[] =
 };
 
 extern u8 rv770_get_memory_module_index(struct radeon_device *rdev);
+extern void btc_get_max_clock_from_voltage_dependency_table(struct radeon_clock_voltage_dependency_table *table,
+							    u32 *max_clock);
 extern int ni_copy_and_switch_arb_sets(struct radeon_device *rdev,
 				       u32 arb_freq_src, u32 arb_freq_dest);
 extern u8 si_get_ddr3_mclk_frequency_ratio(u32 memory_clock);
@@ -712,6 +714,7 @@ static void ci_apply_state_adjust_rules(struct radeon_device *rdev,
 	struct radeon_clock_and_voltage_limits *max_limits;
 	bool disable_mclk_switching;
 	u32 sclk, mclk;
+	u32 max_sclk_vddc, max_mclk_vddci, max_mclk_vddc;
 	int i;
 
 	if ((rdev->pm.dpm.new_active_crtc_count > 1) ||
@@ -736,6 +739,29 @@ static void ci_apply_state_adjust_rules(struct radeon_device *rdev,
 				ps->performance_levels[i].mclk = max_limits->mclk;
 			if (ps->performance_levels[i].sclk > max_limits->sclk)
 				ps->performance_levels[i].sclk = max_limits->sclk;
+		}
+	}
+
+	/* limit clocks to max supported clocks based on voltage dependency tables */
+	btc_get_max_clock_from_voltage_dependency_table(&rdev->pm.dpm.dyn_state.vddc_dependency_on_sclk,
+							&max_sclk_vddc);
+	btc_get_max_clock_from_voltage_dependency_table(&rdev->pm.dpm.dyn_state.vddci_dependency_on_mclk,
+							&max_mclk_vddci);
+	btc_get_max_clock_from_voltage_dependency_table(&rdev->pm.dpm.dyn_state.vddc_dependency_on_mclk,
+							&max_mclk_vddc);
+
+	for (i = 0; i < ps->performance_level_count; i++) {
+		if (max_sclk_vddc) {
+			if (ps->performance_levels[i].sclk > max_sclk_vddc)
+				ps->performance_levels[i].sclk = max_sclk_vddc;
+		}
+		if (max_mclk_vddci) {
+			if (ps->performance_levels[i].mclk > max_mclk_vddci)
+				ps->performance_levels[i].mclk = max_mclk_vddci;
+		}
+		if (max_mclk_vddc) {
+			if (ps->performance_levels[i].mclk > max_mclk_vddc)
+				ps->performance_levels[i].mclk = max_mclk_vddc;
 		}
 	}
 
@@ -793,6 +819,9 @@ static int ci_set_thermal_temperature_range(struct radeon_device *rdev,
 	tmp |= DIG_THERM_DPM(high_temp / 1000);
 	WREG32_SMC(CG_THERMAL_CTRL, tmp);
 #endif
+
+	rdev->pm.dpm.thermal.min_temp = low_temp;
+	rdev->pm.dpm.thermal.max_temp = high_temp;
 
 	return 0;
 }
@@ -1104,7 +1133,7 @@ static int ci_stop_dpm(struct radeon_device *rdev)
 	tmp &= ~GLOBAL_PWRMGT_EN;
 	WREG32_SMC(GENERAL_PWRMGT, tmp);
 
-	tmp = RREG32(SCLK_PWRMGT_CNTL);
+	tmp = RREG32_SMC(SCLK_PWRMGT_CNTL);
 	tmp &= ~DYNAMIC_PM_EN;
 	WREG32_SMC(SCLK_PWRMGT_CNTL, tmp);
 
@@ -4669,7 +4698,7 @@ void ci_dpm_disable(struct radeon_device *rdev)
 	ci_enable_spread_spectrum(rdev, false);
 	ci_enable_auto_throttle_source(rdev, RADEON_DPM_AUTO_THROTTLE_SRC_THERMAL, false);
 	ci_stop_dpm(rdev);
-	ci_enable_ds_master_switch(rdev, true);
+	ci_enable_ds_master_switch(rdev, false);
 	ci_enable_ulv(rdev, false);
 	ci_clear_vc(rdev);
 	ci_reset_to_default(rdev);
@@ -4747,12 +4776,6 @@ int ci_dpm_set_power_state(struct radeon_device *rdev)
 	}
 	if (pi->pcie_performance_request)
 		ci_notify_link_speed_change_after_state_change(rdev, new_ps, old_ps);
-
-	ret = ci_dpm_force_performance_level(rdev, RADEON_DPM_FORCED_LEVEL_AUTO);
-	if (ret) {
-		DRM_ERROR("ci_dpm_force_performance_level failed\n");
-		return ret;
-	}
 
 	cik_update_cg(rdev, (RADEON_CG_BLOCK_GFX |
 			     RADEON_CG_BLOCK_MC |
@@ -5077,6 +5100,10 @@ int ci_dpm_init(struct radeon_device *rdev)
 	pi->sclk_dpm_key_disabled = 0;
 	pi->mclk_dpm_key_disabled = 0;
 	pi->pcie_dpm_key_disabled = 0;
+
+	/* mclk dpm is unstable on some R7 260X cards */
+	if (rdev->pdev->device == 0x6658)
+		pi->mclk_dpm_key_disabled = 1;
 
 	pi->caps_sclk_ds = true;
 

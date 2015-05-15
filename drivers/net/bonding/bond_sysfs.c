@@ -587,8 +587,9 @@ static ssize_t bonding_store_arp_interval(struct device *d,
 		goto out;
 	}
 	if (bond->params.mode == BOND_MODE_ALB ||
-	    bond->params.mode == BOND_MODE_TLB) {
-		pr_info("%s: ARP monitoring cannot be used with ALB/TLB. Only MII monitoring is supported on %s.\n",
+	    bond->params.mode == BOND_MODE_TLB ||
+	    bond->params.mode == BOND_MODE_8023AD) {
+		pr_info("%s: ARP monitoring cannot be used with ALB/TLB/802.3ad. Only MII monitoring is supported on %s.\n",
 			bond->dev->name, bond->dev->name);
 		ret = -EINVAL;
 		goto out;
@@ -759,6 +760,8 @@ static ssize_t bonding_store_downdelay(struct device *d,
 	int new_value, ret = count;
 	struct bonding *bond = to_bond(d);
 
+	if (!rtnl_trylock())
+		return restart_syscall();
 	if (!(bond->params.miimon)) {
 		pr_err("%s: Unable to set down delay as MII monitoring is disabled\n",
 		       bond->dev->name);
@@ -792,6 +795,7 @@ static ssize_t bonding_store_downdelay(struct device *d,
 	}
 
 out:
+	rtnl_unlock();
 	return ret;
 }
 static DEVICE_ATTR(downdelay, S_IRUGO | S_IWUSR,
@@ -814,6 +818,8 @@ static ssize_t bonding_store_updelay(struct device *d,
 	int new_value, ret = count;
 	struct bonding *bond = to_bond(d);
 
+	if (!rtnl_trylock())
+		return restart_syscall();
 	if (!(bond->params.miimon)) {
 		pr_err("%s: Unable to set up delay as MII monitoring is disabled\n",
 		       bond->dev->name);
@@ -847,6 +853,7 @@ static ssize_t bonding_store_updelay(struct device *d,
 	}
 
 out:
+	rtnl_unlock();
 	return ret;
 }
 static DEVICE_ATTR(updelay, S_IRUGO | S_IWUSR,
@@ -1699,6 +1706,44 @@ out:
 static DEVICE_ATTR(resend_igmp, S_IRUGO | S_IWUSR,
 		   bonding_show_resend_igmp, bonding_store_resend_igmp);
 
+
+static ssize_t bonding_show_lp_interval(struct device *d,
+					struct device_attribute *attr,
+					char *buf)
+{
+	struct bonding *bond = to_bond(d);
+	return sprintf(buf, "%d\n", bond->params.lp_interval);
+}
+
+static ssize_t bonding_store_lp_interval(struct device *d,
+					 struct device_attribute *attr,
+					 const char *buf, size_t count)
+{
+	struct bonding *bond = to_bond(d);
+	int new_value, ret = count;
+
+	if (sscanf(buf, "%d", &new_value) != 1) {
+		pr_err("%s: no lp interval value specified.\n",
+			bond->dev->name);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if (new_value <= 0) {
+		pr_err ("%s: lp_interval must be between 1 and %d\n",
+			bond->dev->name, INT_MAX);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	bond->params.lp_interval = new_value;
+out:
+	return ret;
+}
+
+static DEVICE_ATTR(lp_interval, S_IRUGO | S_IWUSR,
+		   bonding_show_lp_interval, bonding_store_lp_interval);
+
 static struct attribute *per_bond_attrs[] = {
 	&dev_attr_slaves.attr,
 	&dev_attr_mode.attr,
@@ -1729,6 +1774,7 @@ static struct attribute *per_bond_attrs[] = {
 	&dev_attr_all_slaves_active.attr,
 	&dev_attr_resend_igmp.attr,
 	&dev_attr_min_links.attr,
+	&dev_attr_lp_interval.attr,
 	NULL,
 };
 

@@ -408,7 +408,7 @@ static loff_t lower_offset_for_page(struct ecryptfs_crypt_stat *crypt_stat,
 				    struct page *page)
 {
 	return ecryptfs_lower_header_size(crypt_stat) +
-	       (page->index << PAGE_CACHE_SHIFT);
+	       ((loff_t)page->index << PAGE_CACHE_SHIFT);
 }
 
 /**
@@ -1917,7 +1917,6 @@ ecryptfs_decode_from_filename(unsigned char *dst, size_t *dst_size,
 			break;
 		case 2:
 			dst[dst_byte_offset++] |= (src_byte);
-			dst[dst_byte_offset] = 0;
 			current_bit_offset = 0;
 			break;
 		}

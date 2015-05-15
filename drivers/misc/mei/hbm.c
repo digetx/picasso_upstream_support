@@ -35,11 +35,15 @@ static void mei_hbm_me_cl_allocate(struct mei_device *dev)
 	struct mei_me_client *clients;
 	int b;
 
+	dev->me_clients_num = 0;
+	dev->me_client_presentation_num = 0;
+	dev->me_client_index = 0;
+
 	/* count how many ME clients we have */
 	for_each_set_bit(b, dev->me_clients_map, MEI_CLIENTS_MAX)
 		dev->me_clients_num++;
 
-	if (dev->me_clients_num <= 0)
+	if (dev->me_clients_num == 0)
 		return;
 
 	kfree(dev->me_clients);
@@ -122,6 +126,17 @@ static bool is_treat_specially_client(struct mei_cl *cl,
 		return true;
 	}
 	return false;
+}
+
+/**
+ * mei_hbm_idle - set hbm to idle state
+ *
+ * @dev: the device structure
+ */
+void mei_hbm_idle(struct mei_device *dev)
+{
+	dev->init_clients_timer = 0;
+	dev->hbm_state = MEI_HBM_IDLE;
 }
 
 int mei_hbm_start_wait(struct mei_device *dev)
@@ -221,7 +236,7 @@ static int mei_hbm_prop_req(struct mei_device *dev)
 	struct hbm_props_request *prop_req;
 	const size_t len = sizeof(struct hbm_props_request);
 	unsigned long next_client_index;
-	u8 client_num;
+	unsigned long client_num;
 
 
 	client_num = dev->me_client_presentation_num;
@@ -573,6 +588,14 @@ void mei_hbm_dispatch(struct mei_device *dev, struct mei_msg_hdr *hdr)
 	mei_read_slots(dev, dev->rd_msg_buf, hdr->length);
 	mei_msg = (struct mei_bus_message *)dev->rd_msg_buf;
 
+	/* ignore spurious message and prevent reset nesting
+	 * hbm is put to idle during system reset
+	 */
+	if (dev->hbm_state == MEI_HBM_IDLE) {
+		dev_dbg(&dev->pdev->dev, "hbm: state is idle ignore spurious messages\n");
+		return;
+	}
+
 	switch (mei_msg->hbm_cmd) {
 	case HOST_START_RES_CMD:
 		version_res = (struct hbm_host_version_response *)mei_msg;
@@ -677,8 +700,6 @@ void mei_hbm_dispatch(struct mei_device *dev, struct mei_msg_hdr *hdr)
 		if (dev->dev_state == MEI_DEV_INIT_CLIENTS &&
 		    dev->hbm_state == MEI_HBM_ENUM_CLIENTS) {
 				dev->init_clients_timer = 0;
-				dev->me_client_presentation_num = 0;
-				dev->me_client_index = 0;
 				mei_hbm_me_cl_allocate(dev);
 				dev->hbm_state = MEI_HBM_CLIENT_PROPERTIES;
 

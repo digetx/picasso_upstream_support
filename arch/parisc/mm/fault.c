@@ -171,17 +171,25 @@ void do_page_fault(struct pt_regs *regs, unsigned long code,
 			      unsigned long address)
 {
 	struct vm_area_struct *vma, *prev_vma;
-	struct task_struct *tsk = current;
-	struct mm_struct *mm = tsk->mm;
+	struct task_struct *tsk;
+	struct mm_struct *mm;
 	unsigned long acc_type;
 	int fault;
-	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+	unsigned int flags;
 
-	if (in_atomic() || !mm)
+	if (in_atomic())
 		goto no_context;
 
+	tsk = current;
+	mm = tsk->mm;
+	if (!mm)
+		goto no_context;
+
+	flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
 	if (user_mode(regs))
 		flags |= FAULT_FLAG_USER;
+
+	acc_type = parisc_acctyp(code, regs->iir);
 	if (acc_type & VM_WRITE)
 		flags |= FAULT_FLAG_WRITE;
 retry:
@@ -195,8 +203,6 @@ retry:
  */
 
 good_area:
-
-	acc_type = parisc_acctyp(code,regs->iir);
 
 	if ((vma->vm_flags & acc_type) != acc_type)
 		goto bad_area;
@@ -220,6 +226,8 @@ good_area:
 		 */
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
+		else if (fault & VM_FAULT_SIGSEGV)
+			goto bad_area;
 		else if (fault & VM_FAULT_SIGBUS)
 			goto bad_area;
 		BUG();

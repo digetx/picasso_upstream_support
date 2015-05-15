@@ -393,6 +393,9 @@ static int ismt_access(struct i2c_adapter *adap, u16 addr,
 
 	desc = &priv->hw[priv->head];
 
+	/* Initialize the DMA buffer */
+	memset(priv->dma_buffer, 0, sizeof(priv->dma_buffer));
+
 	/* Initialize the descriptor */
 	memset(desc, 0, sizeof(struct ismt_desc));
 	desc->tgtaddr_rw = ISMT_DESC_ADDR_RW(addr, read_write);
@@ -494,7 +497,7 @@ static int ismt_access(struct i2c_adapter *adap, u16 addr,
 			desc->wr_len_cmd = dma_size;
 			desc->control |= ISMT_DESC_BLK;
 			priv->dma_buffer[0] = command;
-			memcpy(&priv->dma_buffer[1], &data->block[1], dma_size);
+			memcpy(&priv->dma_buffer[1], &data->block[1], dma_size - 1);
 		} else {
 			/* Block Read */
 			dev_dbg(dev, "I2C_SMBUS_BLOCK_DATA:  READ\n");

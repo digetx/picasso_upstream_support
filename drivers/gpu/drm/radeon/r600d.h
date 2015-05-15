@@ -1040,7 +1040,7 @@
 #       define HDMI0_AVI_INFO_CONT   (1 << 1)
 #       define HDMI0_AUDIO_INFO_SEND (1 << 4)
 #       define HDMI0_AUDIO_INFO_CONT (1 << 5)
-#       define HDMI0_AUDIO_INFO_SOURCE (1 << 6) /* 0 - sound block; 1 - hmdi regs */
+#       define HDMI0_AUDIO_INFO_SOURCE (1 << 6) /* 0 - sound block; 1 - hdmi regs */
 #       define HDMI0_AUDIO_INFO_UPDATE (1 << 7)
 #       define HDMI0_MPEG_INFO_SEND  (1 << 8)
 #       define HDMI0_MPEG_INFO_CONT  (1 << 9)
@@ -1523,7 +1523,7 @@
  */
 #              define PACKET3_CP_DMA_CP_SYNC       (1 << 31)
 /* COMMAND */
-#              define PACKET3_CP_DMA_CMD_SRC_SWAP(x) ((x) << 23)
+#              define PACKET3_CP_DMA_CMD_SRC_SWAP(x) ((x) << 22)
                 /* 0 - none
 		 * 1 - 8 in 16
 		 * 2 - 8 in 32
@@ -1547,6 +1547,7 @@
 #              define PACKET3_CP_DMA_CMD_DAIC      (1 << 29)
 #define	PACKET3_SURFACE_SYNC				0x43
 #              define PACKET3_CB0_DEST_BASE_ENA    (1 << 6)
+#              define PACKET3_FULL_CACHE_ENA       (1 << 20) /* r7xx+ only */
 #              define PACKET3_TC_ACTION_ENA        (1 << 23)
 #              define PACKET3_VC_ACTION_ENA        (1 << 24)
 #              define PACKET3_CB_ACTION_ENA        (1 << 25)

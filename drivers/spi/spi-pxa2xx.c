@@ -400,8 +400,8 @@ static void giveback(struct driver_data *drv_data)
 			cs_deassert(drv_data);
 	}
 
-	spi_finalize_current_message(drv_data->master);
 	drv_data->cur_chip = NULL;
+	spi_finalize_current_message(drv_data->master);
 }
 
 static void reset_sccr1(struct driver_data *drv_data)
@@ -546,8 +546,17 @@ static irqreturn_t ssp_int(int irq, void *dev_id)
 	if (pm_runtime_suspended(&drv_data->pdev->dev))
 		return IRQ_NONE;
 
-	sccr1_reg = read_SSCR1(reg);
+	/*
+	 * If the device is not yet in RPM suspended state and we get an
+	 * interrupt that is meant for another device, check if status bits
+	 * are all set to one. That means that the device is already
+	 * powered off.
+	 */
 	status = read_SSSR(reg);
+	if (status == ~0)
+		return IRQ_NONE;
+
+	sccr1_reg = read_SSCR1(reg);
 
 	/* Ignore possible writes if we don't need to write */
 	if (!(sccr1_reg & SSCR1_TIE))
@@ -1061,6 +1070,8 @@ pxa2xx_spi_acpi_get_pdata(struct platform_device *pdev)
 
 	pdata->num_chipselect = 1;
 	pdata->enable_dma = true;
+	pdata->tx_chan_id = -1;
+	pdata->rx_chan_id = -1;
 
 	return pdata;
 }
@@ -1068,7 +1079,10 @@ pxa2xx_spi_acpi_get_pdata(struct platform_device *pdev)
 static struct acpi_device_id pxa2xx_spi_acpi_match[] = {
 	{ "INT33C0", 0 },
 	{ "INT33C1", 0 },
+	{ "INT3430", 0 },
+	{ "INT3431", 0 },
 	{ "80860F0E", 0 },
+	{ "8086228E", 0 },
 	{ },
 };
 MODULE_DEVICE_TABLE(acpi, pxa2xx_spi_acpi_match);
@@ -1273,7 +1287,9 @@ static int pxa2xx_spi_suspend(struct device *dev)
 	if (status != 0)
 		return status;
 	write_SSCR0(0, drv_data->ioaddr);
-	clk_disable_unprepare(ssp->clk);
+
+	if (!pm_runtime_suspended(dev))
+		clk_disable_unprepare(ssp->clk);
 
 	return 0;
 }
@@ -1287,7 +1303,8 @@ static int pxa2xx_spi_resume(struct device *dev)
 	pxa2xx_spi_dma_resume(drv_data);
 
 	/* Enable the SSP clock */
-	clk_prepare_enable(ssp->clk);
+	if (!pm_runtime_suspended(dev))
+		clk_prepare_enable(ssp->clk);
 
 	/* Start the queue running */
 	status = spi_master_resume(drv_data->master);

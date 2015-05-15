@@ -10,12 +10,14 @@
 #include <linux/errno.h>
 #include <linux/err.h>
 #include <linux/interrupt.h>
+#include <xen/xen.h>
 #include <xen/events.h>
 #include <xen/interface/io/tpmif.h>
 #include <xen/grant_table.h>
 #include <xen/xenbus.h>
 #include <xen/page.h>
 #include "tpm.h"
+#include <xen/platform_pci.h>
 
 struct tpm_private {
 	struct tpm_chip *chip;
@@ -142,32 +144,6 @@ static int vtpm_recv(struct tpm_chip *chip, u8 *buf, size_t count)
 	return length;
 }
 
-ssize_t tpm_show_locality(struct device *dev, struct device_attribute *attr,
-			  char *buf)
-{
-	struct tpm_chip *chip = dev_get_drvdata(dev);
-	struct tpm_private *priv = TPM_VPRIV(chip);
-	u8 locality = priv->shr->locality;
-
-	return sprintf(buf, "%d\n", locality);
-}
-
-ssize_t tpm_store_locality(struct device *dev, struct device_attribute *attr,
-			const char *buf, size_t len)
-{
-	struct tpm_chip *chip = dev_get_drvdata(dev);
-	struct tpm_private *priv = TPM_VPRIV(chip);
-	u8 val;
-
-	int rv = kstrtou8(buf, 0, &val);
-	if (rv)
-		return rv;
-
-	priv->shr->locality = val;
-
-	return len;
-}
-
 static const struct file_operations vtpm_ops = {
 	.owner = THIS_MODULE,
 	.llseek = no_llseek,
@@ -188,8 +164,6 @@ static DEVICE_ATTR(caps, S_IRUGO, tpm_show_caps, NULL);
 static DEVICE_ATTR(cancel, S_IWUSR | S_IWGRP, NULL, tpm_store_cancel);
 static DEVICE_ATTR(durations, S_IRUGO, tpm_show_durations, NULL);
 static DEVICE_ATTR(timeouts, S_IRUGO, tpm_show_timeouts, NULL);
-static DEVICE_ATTR(locality, S_IRUGO | S_IWUSR, tpm_show_locality,
-		tpm_store_locality);
 
 static struct attribute *vtpm_attrs[] = {
 	&dev_attr_pubek.attr,
@@ -202,15 +176,12 @@ static struct attribute *vtpm_attrs[] = {
 	&dev_attr_cancel.attr,
 	&dev_attr_durations.attr,
 	&dev_attr_timeouts.attr,
-	&dev_attr_locality.attr,
 	NULL,
 };
 
 static struct attribute_group vtpm_attr_grp = {
 	.attrs = vtpm_attrs,
 };
-
-#define TPM_LONG_TIMEOUT   (10 * 60 * HZ)
 
 static const struct tpm_vendor_specific tpm_vtpm = {
 	.status = vtpm_status,
@@ -223,11 +194,6 @@ static const struct tpm_vendor_specific tpm_vtpm = {
 	.attr_group = &vtpm_attr_grp,
 	.miscdev = {
 		.fops = &vtpm_ops,
-	},
-	.duration = {
-		TPM_LONG_TIMEOUT,
-		TPM_LONG_TIMEOUT,
-		TPM_LONG_TIMEOUT,
 	},
 };
 
@@ -456,6 +422,9 @@ static DEFINE_XENBUS_DRIVER(tpmfront, ,
 static int __init xen_tpmfront_init(void)
 {
 	if (!xen_domain())
+		return -ENODEV;
+
+	if (!xen_has_pv_devices())
 		return -ENODEV;
 
 	return xenbus_register_frontend(&tpmfront_driver);

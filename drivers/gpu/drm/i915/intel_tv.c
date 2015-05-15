@@ -854,6 +854,10 @@ intel_enable_tv(struct intel_encoder *encoder)
 	struct drm_device *dev = encoder->base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
 
+	/* Prevents vblank waits from timing out in intel_tv_detect_type() */
+	intel_wait_for_vblank(encoder->base.dev,
+			      to_intel_crtc(encoder->base.crtc)->pipe);
+
 	I915_WRITE(TV_CTL, I915_READ(TV_CTL) | TV_ENC_ENABLE);
 }
 
@@ -915,6 +919,14 @@ intel_tv_compute_config(struct intel_encoder *encoder,
 	pipe_config->adjusted_mode.clock = tv_mode->clock;
 	DRM_DEBUG_KMS("forcing bpc to 8 for TV\n");
 	pipe_config->pipe_bpp = 8*3;
+
+	/* TV has it's own notion of sync and other mode flags, so clear them. */
+	pipe_config->adjusted_mode.flags = 0;
+
+	/*
+	 * FIXME: We don't check whether the input mode is actually what we want
+	 * or whether userspace is doing something stupid.
+	 */
 
 	return true;
 }
@@ -1522,9 +1534,14 @@ static int tv_is_present_in_vbt(struct drm_device *dev)
 		/*
 		 * If the device type is not TV, continue.
 		 */
-		if (p_child->device_type != DEVICE_TYPE_INT_TV &&
-			p_child->device_type != DEVICE_TYPE_TV)
+		switch (p_child->device_type) {
+		case DEVICE_TYPE_INT_TV:
+		case DEVICE_TYPE_TV:
+		case DEVICE_TYPE_TV_SVIDEO_COMPOSITE:
+			break;
+		default:
 			continue;
+		}
 		/* Only when the addin_offset is non-zero, it is regarded
 		 * as present.
 		 */

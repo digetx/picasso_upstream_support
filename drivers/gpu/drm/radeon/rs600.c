@@ -582,8 +582,10 @@ int rs600_gart_set_page(struct radeon_device *rdev, int i, uint64_t addr)
 		return -EINVAL;
 	}
 	addr = addr & 0xFFFFFFFFFFFFF000ULL;
-	addr |= R600_PTE_VALID | R600_PTE_SYSTEM | R600_PTE_SNOOPED;
-	addr |= R600_PTE_READABLE | R600_PTE_WRITEABLE;
+	if (addr != rdev->dummy_page.addr)
+		addr |= R600_PTE_VALID | R600_PTE_READABLE |
+			R600_PTE_WRITEABLE;
+	addr |= R600_PTE_SYSTEM | R600_PTE_SNOOPED;
 	writeq(addr, ptr + (i * 8));
 	return 0;
 }
@@ -634,6 +636,10 @@ int rs600_irq_set(struct radeon_device *rdev)
 	WREG32(R_007D18_DC_HOT_PLUG_DETECT2_INT_CONTROL, hpd2);
 	if (ASIC_IS_DCE2(rdev))
 		WREG32(R_007408_HDMI0_AUDIO_PACKET_CONTROL, hdmi0);
+
+	/* posting read */
+	RREG32(R_000040_GEN_INT_CNTL);
+
 	return 0;
 }
 
@@ -824,6 +830,9 @@ void rs600_bandwidth_update(struct radeon_device *rdev)
 	u32 d1mode_priority_a_cnt, d2mode_priority_a_cnt;
 	/* FIXME: implement full support */
 
+	if (!rdev->mode_info.mode_config_initialized)
+		return;
+
 	radeon_update_display_priority(rdev);
 
 	if (rdev->mode_info.crtcs[0]->base.enabled)
@@ -847,16 +856,26 @@ void rs600_bandwidth_update(struct radeon_device *rdev)
 
 uint32_t rs600_mc_rreg(struct radeon_device *rdev, uint32_t reg)
 {
+	unsigned long flags;
+	u32 r;
+
+	spin_lock_irqsave(&rdev->mc_idx_lock, flags);
 	WREG32(R_000070_MC_IND_INDEX, S_000070_MC_IND_ADDR(reg) |
 		S_000070_MC_IND_CITF_ARB0(1));
-	return RREG32(R_000074_MC_IND_DATA);
+	r = RREG32(R_000074_MC_IND_DATA);
+	spin_unlock_irqrestore(&rdev->mc_idx_lock, flags);
+	return r;
 }
 
 void rs600_mc_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v)
 {
+	unsigned long flags;
+
+	spin_lock_irqsave(&rdev->mc_idx_lock, flags);
 	WREG32(R_000070_MC_IND_INDEX, S_000070_MC_IND_ADDR(reg) |
 		S_000070_MC_IND_CITF_ARB0(1) | S_000070_MC_IND_WR_EN(1));
 	WREG32(R_000074_MC_IND_DATA, v);
+	spin_unlock_irqrestore(&rdev->mc_idx_lock, flags);
 }
 
 static void rs600_debugfs(struct radeon_device *rdev)

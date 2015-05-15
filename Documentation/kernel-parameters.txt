@@ -343,6 +343,9 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			no: ACPI OperationRegions are not marked as reserved,
 			no further checks are performed.
 
+	acpi_no_memhotplug [ACPI] Disable memory hotplug.  Useful for kdump
+			   kernels.
+
 	add_efi_memmap	[EFI; X86] Include EFI memory map in
 			kernel's map of available physical RAM.
 
@@ -479,6 +482,10 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			BayCom Serial Port AX.25 Modem (Half Duplex Mode)
 			Format: <io>,<irq>,<mode>
 			See header of drivers/net/hamradio/baycom_ser_hdx.c.
+
+	blkdevparts=	Manual partition parsing of block device(s) for
+			embedded devices based on command line input.
+			See Documentation/block/cmdline-partition.txt
 
 	boot_delay=	Milliseconds to delay each printk during boot.
 			Values larger than 10 seconds (10000) are changed to
@@ -1112,6 +1119,7 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 	i8042.notimeout	[HW] Ignore timeout condition signalled by controller
 	i8042.reset	[HW] Reset the controller during init and cleanup
 	i8042.unlock	[HW] Unlock (ignore) the keylock
+	i8042.kbdreset  [HW] Reset device connected to KBD port
 
 	i810=		[HW,DRM]
 
@@ -1357,7 +1365,7 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			pages. In the event, a node is too small to have both
 			kernelcore and Movable pages, kernelcore pages will
 			take priority and other nodes will have a larger number
-			of kernelcore pages.  The Movable zone is used for the
+			of Movable pages.  The Movable zone is used for the
 			allocation of pages that may be reclaimed or moved
 			by the page migration subsystem.  This means that
 			HugeTLB pages may not be allocated from this zone.
@@ -1510,6 +1518,8 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			* dump_id: dump IDENTIFY data.
 
 			* atapi_dmadir: Enable ATAPI DMADIR bridge support
+
+			* disable: Disable this device.
 
 			If there are multiple matching configurations changing
 			the same attribute, the last one is used.
@@ -3484,6 +3494,10 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 				unnecessary even if the host did not respond to
 				the unplug protocol
 			never -- do not unplug even if version check succeeds
+
+	xen_nopvspin	[X86,XEN]
+			Disables the ticketlock slowpath using Xen PV
+			optimizations.
 
 	xirc2ps_cs=	[NET,PCMCIA]
 			Format:

@@ -181,12 +181,25 @@ static void mvebu_mbus_disable_window(struct mvebu_mbus_state *mbus,
 }
 
 /* Checks whether the given window number is available */
+
+/* On Armada XP, 375 and 38x the MBus window 13 has the remap
+ * capability, like windows 0 to 7. However, the mvebu-mbus driver
+ * isn't currently taking into account this special case, which means
+ * that when window 13 is actually used, the remap registers are left
+ * to 0, making the device using this MBus window unavailable. The
+ * quick fix for stable is to not use window 13. A follow up patch
+ * will correctly handle this window.
+*/
 static int mvebu_mbus_window_is_free(struct mvebu_mbus_state *mbus,
 				     const int win)
 {
 	void __iomem *addr = mbus->mbuswins_base +
 		mbus->soc->win_cfg_offset(win);
 	u32 ctrl = readl(addr + WIN_CTRL_OFF);
+
+	if (win == 13)
+		return false;
+
 	return !(ctrl & WIN_CTRL_ENABLE);
 }
 
@@ -221,12 +234,6 @@ static int mvebu_mbus_window_conflicts(struct mvebu_mbus_state *mbus,
 		 * proposed physical range
 		 */
 		if ((u64)base < wend && end > wbase)
-			return 0;
-
-		/*
-		 * Check if target/attribute conflicts
-		 */
-		if (target == wtarget && attr == wattr)
 			return 0;
 	}
 
@@ -700,6 +707,7 @@ static int __init mvebu_mbus_common_init(struct mvebu_mbus_state *mbus,
 					 phys_addr_t sdramwins_phys_base,
 					 size_t sdramwins_size)
 {
+	struct device_node *np;
 	int win;
 
 	mbus->mbuswins_base = ioremap(mbuswins_phys_base, mbuswins_size);
@@ -712,8 +720,11 @@ static int __init mvebu_mbus_common_init(struct mvebu_mbus_state *mbus,
 		return -ENOMEM;
 	}
 
-	if (of_find_compatible_node(NULL, NULL, "marvell,coherency-fabric"))
+	np = of_find_compatible_node(NULL, NULL, "marvell,coherency-fabric");
+	if (np) {
 		mbus->hw_io_coherency = 1;
+		of_node_put(np);
+	}
 
 	for (win = 0; win < mbus->soc->num_wins; win++)
 		mvebu_mbus_disable_window(mbus, win);
@@ -861,11 +872,13 @@ static void __init mvebu_mbus_get_pcie_resources(struct device_node *np,
 	int ret;
 
 	/*
-	 * These are optional, so we clear them and they'll
-	 * be zero if they are missing from the DT.
+	 * These are optional, so we make sure that resource_size(x) will
+	 * return 0.
 	 */
 	memset(mem, 0, sizeof(struct resource));
+	mem->end = -1;
 	memset(io, 0, sizeof(struct resource));
+	io->end = -1;
 
 	ret = of_property_read_u32_array(np, "pcie-mem-aperture", reg, ARRAY_SIZE(reg));
 	if (!ret) {

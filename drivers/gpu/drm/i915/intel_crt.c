@@ -83,8 +83,7 @@ static bool intel_crt_get_hw_state(struct intel_encoder *encoder,
 	return true;
 }
 
-static void intel_crt_get_config(struct intel_encoder *encoder,
-				 struct intel_crtc_config *pipe_config)
+static unsigned int intel_crt_get_flags(struct intel_encoder *encoder)
 {
 	struct drm_i915_private *dev_priv = encoder->base.dev->dev_private;
 	struct intel_crt *crt = intel_encoder_to_crt(encoder);
@@ -102,7 +101,25 @@ static void intel_crt_get_config(struct intel_encoder *encoder,
 	else
 		flags |= DRM_MODE_FLAG_NVSYNC;
 
-	pipe_config->adjusted_mode.flags |= flags;
+	return flags;
+}
+
+static void intel_crt_get_config(struct intel_encoder *encoder,
+				 struct intel_crtc_config *pipe_config)
+{
+	pipe_config->adjusted_mode.flags |= intel_crt_get_flags(encoder);
+}
+
+static void hsw_crt_get_config(struct intel_encoder *encoder,
+			       struct intel_crtc_config *pipe_config)
+{
+	intel_ddi_get_config(encoder, pipe_config);
+
+	pipe_config->adjusted_mode.flags &= ~(DRM_MODE_FLAG_PHSYNC |
+					      DRM_MODE_FLAG_NHSYNC |
+					      DRM_MODE_FLAG_PVSYNC |
+					      DRM_MODE_FLAG_NVSYNC);
+	pipe_config->adjusted_mode.flags |= intel_crt_get_flags(encoder);
 }
 
 /* Note: The caller is required to filter out dpms modes not supported by the
@@ -726,7 +743,7 @@ static const struct drm_encoder_funcs intel_crt_enc_funcs = {
 	.destroy = intel_encoder_destroy,
 };
 
-static int __init intel_no_crt_dmi_callback(const struct dmi_system_id *id)
+static int intel_no_crt_dmi_callback(const struct dmi_system_id *id)
 {
 	DRM_INFO("Skipping CRT initialization for %s\n", id->ident);
 	return 1;
@@ -739,6 +756,14 @@ static const struct dmi_system_id intel_no_crt[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ACER"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "ZGB"),
+		},
+	},
+	{
+		.callback = intel_no_crt_dmi_callback,
+		.ident = "DELL XPS 8700",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "XPS 8700"),
 		},
 	},
 	{ }
@@ -799,7 +824,10 @@ void intel_crt_init(struct drm_device *dev)
 	crt->base.mode_set = intel_crt_mode_set;
 	crt->base.disable = intel_disable_crt;
 	crt->base.enable = intel_enable_crt;
-	crt->base.get_config = intel_crt_get_config;
+	if (IS_HASWELL(dev))
+		crt->base.get_config = hsw_crt_get_config;
+	else
+		crt->base.get_config = intel_crt_get_config;
 	if (I915_HAS_HOTPLUG(dev))
 		crt->base.hpd_pin = HPD_CRT;
 	if (HAS_DDI(dev))

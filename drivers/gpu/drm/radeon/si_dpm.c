@@ -2396,7 +2396,7 @@ static int si_populate_sq_ramping_values(struct radeon_device *rdev,
 	if (SISLANDS_DPM2_SQ_RAMP_STI_SIZE > (STI_SIZE_MASK >> STI_SIZE_SHIFT))
 		enable_sq_ramping = false;
 
-	if (NISLANDS_DPM2_SQ_RAMP_LTI_RATIO <= (LTI_RATIO_MASK >> LTI_RATIO_SHIFT))
+	if (SISLANDS_DPM2_SQ_RAMP_LTI_RATIO > (LTI_RATIO_MASK >> LTI_RATIO_SHIFT))
 		enable_sq_ramping = false;
 
 	for (i = 0; i < state->performance_level_count; i++) {
@@ -2901,6 +2901,22 @@ static int si_init_smc_spll_table(struct radeon_device *rdev)
 	return ret;
 }
 
+struct si_dpm_quirk {
+	u32 chip_vendor;
+	u32 chip_device;
+	u32 subsys_vendor;
+	u32 subsys_device;
+	u32 max_sclk;
+	u32 max_mclk;
+};
+
+/* cards with dpm stability problems */
+static struct si_dpm_quirk si_dpm_quirk_list[] = {
+	/* PITCAIRN - https://bugs.freedesktop.org/show_bug.cgi?id=76490 */
+	{ PCI_VENDOR_ID_ATI, 0x6810, 0x1462, 0x3036, 0, 120000 },
+	{ 0, 0, 0, 0 },
+};
+
 static void si_apply_state_adjust_rules(struct radeon_device *rdev,
 					struct radeon_ps *rps)
 {
@@ -2910,7 +2926,23 @@ static void si_apply_state_adjust_rules(struct radeon_device *rdev,
 	bool disable_sclk_switching = false;
 	u32 mclk, sclk;
 	u16 vddc, vddci;
+	u32 max_sclk_vddc, max_mclk_vddci, max_mclk_vddc;
+	u32 max_sclk = 0, max_mclk = 0;
 	int i;
+	struct si_dpm_quirk *p = si_dpm_quirk_list;
+
+	/* Apply dpm quirks */
+	while (p && p->chip_device != 0) {
+		if (rdev->pdev->vendor == p->chip_vendor &&
+		    rdev->pdev->device == p->chip_device &&
+		    rdev->pdev->subsystem_vendor == p->subsys_vendor &&
+		    rdev->pdev->subsystem_device == p->subsys_device) {
+			max_sclk = p->max_sclk;
+			max_mclk = p->max_mclk;
+			break;
+		}
+		++p;
+	}
 
 	if ((rdev->pm.dpm.new_active_crtc_count > 1) ||
 	    ni_dpm_vblank_too_short(rdev))
@@ -2940,6 +2972,37 @@ static void si_apply_state_adjust_rules(struct radeon_device *rdev,
 				ps->performance_levels[i].vddc = max_limits->vddc;
 			if (ps->performance_levels[i].vddci > max_limits->vddci)
 				ps->performance_levels[i].vddci = max_limits->vddci;
+		}
+	}
+
+	/* limit clocks to max supported clocks based on voltage dependency tables */
+	btc_get_max_clock_from_voltage_dependency_table(&rdev->pm.dpm.dyn_state.vddc_dependency_on_sclk,
+							&max_sclk_vddc);
+	btc_get_max_clock_from_voltage_dependency_table(&rdev->pm.dpm.dyn_state.vddci_dependency_on_mclk,
+							&max_mclk_vddci);
+	btc_get_max_clock_from_voltage_dependency_table(&rdev->pm.dpm.dyn_state.vddc_dependency_on_mclk,
+							&max_mclk_vddc);
+
+	for (i = 0; i < ps->performance_level_count; i++) {
+		if (max_sclk_vddc) {
+			if (ps->performance_levels[i].sclk > max_sclk_vddc)
+				ps->performance_levels[i].sclk = max_sclk_vddc;
+		}
+		if (max_mclk_vddci) {
+			if (ps->performance_levels[i].mclk > max_mclk_vddci)
+				ps->performance_levels[i].mclk = max_mclk_vddci;
+		}
+		if (max_mclk_vddc) {
+			if (ps->performance_levels[i].mclk > max_mclk_vddc)
+				ps->performance_levels[i].mclk = max_mclk_vddc;
+		}
+		if (max_mclk) {
+			if (ps->performance_levels[i].mclk > max_mclk)
+				ps->performance_levels[i].mclk = max_mclk;
+		}
+		if (max_sclk) {
+			if (ps->performance_levels[i].sclk > max_sclk)
+				ps->performance_levels[i].sclk = max_sclk;
 		}
 	}
 
@@ -5184,7 +5247,7 @@ static int si_set_mc_special_registers(struct radeon_device *rdev,
 					table->mc_reg_table_entry[k].mc_data[j] |= 0x100;
 			}
 			j++;
-			if (j > SMC_SISLANDS_MC_REGISTER_ARRAY_SIZE)
+			if (j >= SMC_SISLANDS_MC_REGISTER_ARRAY_SIZE)
 				return -EINVAL;
 
 			if (!pi->mem_gddr5) {
@@ -5194,7 +5257,7 @@ static int si_set_mc_special_registers(struct radeon_device *rdev,
 					table->mc_reg_table_entry[k].mc_data[j] =
 						(table->mc_reg_table_entry[k].mc_data[i] & 0xffff0000) >> 16;
 				j++;
-				if (j > SMC_SISLANDS_MC_REGISTER_ARRAY_SIZE)
+				if (j >= SMC_SISLANDS_MC_REGISTER_ARRAY_SIZE)
 					return -EINVAL;
 			}
 			break;
@@ -5207,7 +5270,7 @@ static int si_set_mc_special_registers(struct radeon_device *rdev,
 					(temp_reg & 0xffff0000) |
 					(table->mc_reg_table_entry[k].mc_data[i] & 0x0000ffff);
 			j++;
-			if (j > SMC_SISLANDS_MC_REGISTER_ARRAY_SIZE)
+			if (j >= SMC_SISLANDS_MC_REGISTER_ARRAY_SIZE)
 				return -EINVAL;
 			break;
 		default:
@@ -5385,7 +5448,7 @@ static void si_populate_mc_reg_addresses(struct radeon_device *rdev,
 
 	for (i = 0, j = 0; j < si_pi->mc_reg_table.last; j++) {
 		if (si_pi->mc_reg_table.valid_flag & (1 << j)) {
-			if (i >= SMC_NISLANDS_MC_REGISTER_ARRAY_SIZE)
+			if (i >= SMC_SISLANDS_MC_REGISTER_ARRAY_SIZE)
 				break;
 			mc_reg_table->address[i].s0 =
 				cpu_to_be16(si_pi->mc_reg_table.mc_reg_address[j].s0);
@@ -6075,12 +6138,6 @@ int si_dpm_set_power_state(struct radeon_device *rdev)
 		return ret;
 	}
 
-	ret = si_dpm_force_performance_level(rdev, RADEON_DPM_FORCED_LEVEL_AUTO);
-	if (ret) {
-		DRM_ERROR("si_dpm_force_performance_level failed\n");
-		return ret;
-	}
-
 	si_update_cg(rdev, (RADEON_CG_BLOCK_GFX |
 			    RADEON_CG_BLOCK_MC |
 			    RADEON_CG_BLOCK_SDMA |
@@ -6202,7 +6259,7 @@ static void si_parse_pplib_clock_info(struct radeon_device *rdev,
 	if ((rps->class2 & ATOM_PPLIB_CLASSIFICATION2_ULV) &&
 	    index == 0) {
 		/* XXX disable for A0 tahiti */
-		si_pi->ulv.supported = true;
+		si_pi->ulv.supported = false;
 		si_pi->ulv.pl = *pl;
 		si_pi->ulv.one_pcie_lane_in_ulv = false;
 		si_pi->ulv.volt_change_delay = SISLANDS_ULVVOLTAGECHANGEDELAY_DFLT;

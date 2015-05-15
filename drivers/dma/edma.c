@@ -170,11 +170,13 @@ static void edma_execute(struct edma_chan *echan)
 	if (edesc->processed == edesc->pset_nr)
 		edma_link(echan->slot[nslots-1], echan->ecc->dummy_slot);
 
-	edma_resume(echan->ch_num);
-
 	if (edesc->processed <= MAX_NR_SG) {
 		dev_dbg(dev, "first transfer starting %d\n", echan->ch_num);
 		edma_start(echan->ch_num);
+	} else {
+		dev_dbg(dev, "chan: %d: completed %d elements, resuming\n",
+			echan->ch_num, edesc->processed);
+		edma_resume(echan->ch_num);
 	}
 
 	/*
@@ -305,7 +307,9 @@ static struct dma_async_tx_descriptor *edma_prep_slave_sg(
 				edma_alloc_slot(EDMA_CTLR(echan->ch_num),
 						EDMA_SLOT_ANY);
 			if (echan->slot[i] < 0) {
+				kfree(edesc);
 				dev_err(dev, "Failed to allocate slot\n");
+				kfree(edesc);
 				return NULL;
 			}
 		}
@@ -345,6 +349,7 @@ static struct dma_async_tx_descriptor *edma_prep_slave_sg(
 			ccnt = sg_dma_len(sg) / (acnt * bcnt);
 			if (ccnt > (SZ_64K - 1)) {
 				dev_err(dev, "Exceeded max SG segment size\n");
+				kfree(edesc);
 				return NULL;
 			}
 			cidx = acnt * bcnt;
@@ -749,6 +754,6 @@ static void __exit edma_exit(void)
 }
 module_exit(edma_exit);
 
-MODULE_AUTHOR("Matt Porter <mporter@ti.com>");
+MODULE_AUTHOR("Matt Porter <matt.porter@linaro.org>");
 MODULE_DESCRIPTION("TI EDMA DMA engine driver");
 MODULE_LICENSE("GPL v2");

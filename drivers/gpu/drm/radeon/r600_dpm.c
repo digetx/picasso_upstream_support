@@ -158,16 +158,18 @@ u32 r600_dpm_get_vblank_time(struct radeon_device *rdev)
 	u32 line_time_us, vblank_lines;
 	u32 vblank_time_us = 0xffffffff; /* if the displays are off, vblank time is max */
 
-	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
-		radeon_crtc = to_radeon_crtc(crtc);
-		if (crtc->enabled && radeon_crtc->enabled && radeon_crtc->hw_mode.clock) {
-			line_time_us = (radeon_crtc->hw_mode.crtc_htotal * 1000) /
-				radeon_crtc->hw_mode.clock;
-			vblank_lines = radeon_crtc->hw_mode.crtc_vblank_end -
-				radeon_crtc->hw_mode.crtc_vdisplay +
-				(radeon_crtc->v_border * 2);
-			vblank_time_us = vblank_lines * line_time_us;
-			break;
+	if (rdev->num_crtc && rdev->mode_info.mode_config_initialized) {
+		list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
+			radeon_crtc = to_radeon_crtc(crtc);
+			if (crtc->enabled && radeon_crtc->enabled && radeon_crtc->hw_mode.clock) {
+				line_time_us = (radeon_crtc->hw_mode.crtc_htotal * 1000) /
+					radeon_crtc->hw_mode.clock;
+				vblank_lines = radeon_crtc->hw_mode.crtc_vblank_end -
+					radeon_crtc->hw_mode.crtc_vdisplay +
+					(radeon_crtc->v_border * 2);
+				vblank_time_us = vblank_lines * line_time_us;
+				break;
+			}
 		}
 	}
 
@@ -181,14 +183,15 @@ u32 r600_dpm_get_vrefresh(struct radeon_device *rdev)
 	struct radeon_crtc *radeon_crtc;
 	u32 vrefresh = 0;
 
-	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
-		radeon_crtc = to_radeon_crtc(crtc);
-		if (crtc->enabled && radeon_crtc->enabled && radeon_crtc->hw_mode.clock) {
-			vrefresh = radeon_crtc->hw_mode.vrefresh;
-			break;
+	if (rdev->num_crtc && rdev->mode_info.mode_config_initialized) {
+		list_for_each_entry(crtc, &dev->mode_config.crtc_list, head) {
+			radeon_crtc = to_radeon_crtc(crtc);
+			if (crtc->enabled && radeon_crtc->enabled && radeon_crtc->hw_mode.clock) {
+				vrefresh = drm_mode_vrefresh(&radeon_crtc->hw_mode);
+				break;
+			}
 		}
 	}
-
 	return vrefresh;
 }
 
@@ -1084,7 +1087,7 @@ int r600_parse_extended_power_table(struct radeon_device *rdev)
 				rdev->pm.dpm.dyn_state.uvd_clock_voltage_dependency_table.entries[i].dclk =
 					le16_to_cpu(uvd_clk->usDClkLow) | (uvd_clk->ucDClkHigh << 16);
 				rdev->pm.dpm.dyn_state.uvd_clock_voltage_dependency_table.entries[i].v =
-					le16_to_cpu(limits->entries[i].usVoltage);
+					le16_to_cpu(entry->usVoltage);
 				entry = (ATOM_PPLIB_UVD_Clock_Voltage_Limit_Record *)
 					((u8 *)entry + sizeof(ATOM_PPLIB_UVD_Clock_Voltage_Limit_Record));
 			}
@@ -1190,7 +1193,7 @@ int r600_parse_extended_power_table(struct radeon_device *rdev)
 					(mode_info->atom_context->bios + data_offset +
 					 le16_to_cpu(ext_hdr->usPowerTuneTableOffset));
 				rdev->pm.dpm.dyn_state.cac_tdp_table->maximum_power_delivery_limit =
-					ppt->usMaximumPowerDeliveryLimit;
+					le16_to_cpu(ppt->usMaximumPowerDeliveryLimit);
 				pt = &ppt->power_tune_table;
 			} else {
 				ATOM_PPLIB_POWERTUNE_Table *ppt = (ATOM_PPLIB_POWERTUNE_Table *)
@@ -1219,30 +1222,20 @@ int r600_parse_extended_power_table(struct radeon_device *rdev)
 
 void r600_free_extended_power_table(struct radeon_device *rdev)
 {
-	if (rdev->pm.dpm.dyn_state.vddc_dependency_on_sclk.entries)
-		kfree(rdev->pm.dpm.dyn_state.vddc_dependency_on_sclk.entries);
-	if (rdev->pm.dpm.dyn_state.vddci_dependency_on_mclk.entries)
-		kfree(rdev->pm.dpm.dyn_state.vddci_dependency_on_mclk.entries);
-	if (rdev->pm.dpm.dyn_state.vddc_dependency_on_mclk.entries)
-		kfree(rdev->pm.dpm.dyn_state.vddc_dependency_on_mclk.entries);
-	if (rdev->pm.dpm.dyn_state.mvdd_dependency_on_mclk.entries)
-		kfree(rdev->pm.dpm.dyn_state.mvdd_dependency_on_mclk.entries);
-	if (rdev->pm.dpm.dyn_state.cac_leakage_table.entries)
-		kfree(rdev->pm.dpm.dyn_state.cac_leakage_table.entries);
-	if (rdev->pm.dpm.dyn_state.phase_shedding_limits_table.entries)
-		kfree(rdev->pm.dpm.dyn_state.phase_shedding_limits_table.entries);
-	if (rdev->pm.dpm.dyn_state.ppm_table)
-		kfree(rdev->pm.dpm.dyn_state.ppm_table);
-	if (rdev->pm.dpm.dyn_state.cac_tdp_table)
-		kfree(rdev->pm.dpm.dyn_state.cac_tdp_table);
-	if (rdev->pm.dpm.dyn_state.vce_clock_voltage_dependency_table.entries)
-		kfree(rdev->pm.dpm.dyn_state.vce_clock_voltage_dependency_table.entries);
-	if (rdev->pm.dpm.dyn_state.uvd_clock_voltage_dependency_table.entries)
-		kfree(rdev->pm.dpm.dyn_state.uvd_clock_voltage_dependency_table.entries);
-	if (rdev->pm.dpm.dyn_state.samu_clock_voltage_dependency_table.entries)
-		kfree(rdev->pm.dpm.dyn_state.samu_clock_voltage_dependency_table.entries);
-	if (rdev->pm.dpm.dyn_state.acp_clock_voltage_dependency_table.entries)
-		kfree(rdev->pm.dpm.dyn_state.acp_clock_voltage_dependency_table.entries);
+	struct radeon_dpm_dynamic_state *dyn_state = &rdev->pm.dpm.dyn_state;
+
+	kfree(dyn_state->vddc_dependency_on_sclk.entries);
+	kfree(dyn_state->vddci_dependency_on_mclk.entries);
+	kfree(dyn_state->vddc_dependency_on_mclk.entries);
+	kfree(dyn_state->mvdd_dependency_on_mclk.entries);
+	kfree(dyn_state->cac_leakage_table.entries);
+	kfree(dyn_state->phase_shedding_limits_table.entries);
+	kfree(dyn_state->ppm_table);
+	kfree(dyn_state->cac_tdp_table);
+	kfree(dyn_state->vce_clock_voltage_dependency_table.entries);
+	kfree(dyn_state->uvd_clock_voltage_dependency_table.entries);
+	kfree(dyn_state->samu_clock_voltage_dependency_table.entries);
+	kfree(dyn_state->acp_clock_voltage_dependency_table.entries);
 }
 
 enum radeon_pcie_gen r600_get_pcie_gen_support(struct radeon_device *rdev,

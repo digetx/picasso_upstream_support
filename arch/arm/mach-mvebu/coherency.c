@@ -124,6 +124,29 @@ int __init coherency_init(void)
 {
 	struct device_node *np;
 
+	/*
+	 * The coherency fabric is needed:
+	 * - For coherency between processors on Armada XP, so only
+	 *   when SMP is enabled.
+	 * - For coherency between the processor and I/O devices, but
+	 *   this coherency requires many pre-requisites (write
+	 *   allocate cache policy, shareable pages, SMP bit set) that
+	 *   are only meant in SMP situations.
+	 *
+	 * Note that this means that on Armada 370, there is currently
+	 * no way to use hardware I/O coherency, because even when
+	 * CONFIG_SMP is enabled, is_smp() returns false due to the
+	 * Armada 370 being a single-core processor. To lift this
+	 * limitation, we would have to find a way to make the cache
+	 * policy set to write-allocate (on all Armada SoCs), and to
+	 * set the shareable attribute in page tables (on all Armada
+	 * SoCs except the Armada 370). Unfortunately, such decisions
+	 * are taken very early in the kernel boot process, at a point
+	 * where we don't know yet on which SoC we are running.
+	 */
+	if (!is_smp())
+		return 0;
+
 	np = of_find_matching_node(NULL, of_coherency_table);
 	if (np) {
 		struct resource res;
@@ -140,6 +163,7 @@ int __init coherency_init(void)
 		coherency_base = of_iomap(np, 0);
 		coherency_cpu_base = of_iomap(np, 1);
 		set_cpu_coherent(cpu_logical_map(smp_processor_id()), 0);
+		of_node_put(np);
 	}
 
 	return 0;
@@ -147,9 +171,17 @@ int __init coherency_init(void)
 
 static int __init coherency_late_init(void)
 {
-	if (of_find_matching_node(NULL, of_coherency_table))
+	struct device_node *np;
+
+	if (!is_smp())
+		return 0;
+
+	np = of_find_matching_node(NULL, of_coherency_table);
+	if (np) {
 		bus_register_notifier(&platform_bus_type,
 				      &mvebu_hwcc_platform_nb);
+		of_node_put(np);
+	}
 	return 0;
 }
 

@@ -194,8 +194,8 @@ struct mapped_device {
 	/* forced geometry settings */
 	struct hd_geometry geometry;
 
-	/* sysfs handle */
-	struct kobject kobj;
+	/* kobject and completion */
+	struct dm_kobject_holder kobj_holder;
 
 	/* zero-length flush that will be cloned and submitted to targets */
 	struct bio flush_bio;
@@ -211,9 +211,54 @@ struct dm_md_mempools {
 	struct bio_set *bs;
 };
 
-#define MIN_IOS 256
+#define RESERVED_BIO_BASED_IOS		16
+#define RESERVED_REQUEST_BASED_IOS	256
+#define RESERVED_MAX_IOS		1024
 static struct kmem_cache *_io_cache;
 static struct kmem_cache *_rq_tio_cache;
+
+/*
+ * Bio-based DM's mempools' reserved IOs set by the user.
+ */
+static unsigned reserved_bio_based_ios = RESERVED_BIO_BASED_IOS;
+
+/*
+ * Request-based DM's mempools' reserved IOs set by the user.
+ */
+static unsigned reserved_rq_based_ios = RESERVED_REQUEST_BASED_IOS;
+
+static unsigned __dm_get_reserved_ios(unsigned *reserved_ios,
+				      unsigned def, unsigned max)
+{
+	unsigned ios = ACCESS_ONCE(*reserved_ios);
+	unsigned modified_ios = 0;
+
+	if (!ios)
+		modified_ios = def;
+	else if (ios > max)
+		modified_ios = max;
+
+	if (modified_ios) {
+		(void)cmpxchg(reserved_ios, ios, modified_ios);
+		ios = modified_ios;
+	}
+
+	return ios;
+}
+
+unsigned dm_get_reserved_bio_based_ios(void)
+{
+	return __dm_get_reserved_ios(&reserved_bio_based_ios,
+				     RESERVED_BIO_BASED_IOS, RESERVED_MAX_IOS);
+}
+EXPORT_SYMBOL_GPL(dm_get_reserved_bio_based_ios);
+
+unsigned dm_get_reserved_rq_based_ios(void)
+{
+	return __dm_get_reserved_ios(&reserved_rq_based_ios,
+				     RESERVED_REQUEST_BASED_IOS, RESERVED_MAX_IOS);
+}
+EXPORT_SYMBOL_GPL(dm_get_reserved_rq_based_ios);
 
 static int __init local_init(void)
 {
@@ -1960,6 +2005,7 @@ static struct mapped_device *alloc_dev(int minor)
 	init_waitqueue_head(&md->wait);
 	INIT_WORK(&md->work, dm_wq_work);
 	init_waitqueue_head(&md->eventq);
+	init_completion(&md->kobj_holder.completion);
 
 	md->disk->major = _major;
 	md->disk->first_minor = minor;
@@ -2207,7 +2253,8 @@ static struct dm_table *__bind(struct mapped_device *md, struct dm_table *t,
 		set_bit(DMF_MERGE_IS_OPTIONAL, &md->flags);
 	else
 		clear_bit(DMF_MERGE_IS_OPTIONAL, &md->flags);
-	dm_sync_table(md);
+	if (old_map)
+		dm_sync_table(md);
 
 	return old_map;
 }
@@ -2278,6 +2325,17 @@ struct target_type *dm_get_immutable_target_type(struct mapped_device *md)
 }
 
 /*
+ * The queue_limits are only valid as long as you have a reference
+ * count on 'md'.
+ */
+struct queue_limits *dm_get_queue_limits(struct mapped_device *md)
+{
+	BUG_ON(!atomic_read(&md->holders));
+	return &md->queue->limits;
+}
+EXPORT_SYMBOL_GPL(dm_get_queue_limits);
+
+/*
  * Fully initialize a request-based queue (->elevator, ->request_fn, etc).
  */
 static int dm_init_request_based_queue(struct mapped_device *md)
@@ -2317,7 +2375,7 @@ int dm_setup_md_queue(struct mapped_device *md)
 	return 0;
 }
 
-static struct mapped_device *dm_find_md(dev_t dev)
+struct mapped_device *dm_get_md(dev_t dev)
 {
 	struct mapped_device *md;
 	unsigned minor = MINOR(dev);
@@ -2328,26 +2386,19 @@ static struct mapped_device *dm_find_md(dev_t dev)
 	spin_lock(&_minor_lock);
 
 	md = idr_find(&_minor_idr, minor);
-	if (md && (md == MINOR_ALLOCED ||
-		   (MINOR(disk_devt(dm_disk(md))) != minor) ||
-		   dm_deleting_md(md) ||
-		   test_bit(DMF_FREEING, &md->flags))) {
-		md = NULL;
-		goto out;
+	if (md) {
+		if ((md == MINOR_ALLOCED ||
+		     (MINOR(disk_devt(dm_disk(md))) != minor) ||
+		     dm_deleting_md(md) ||
+		     test_bit(DMF_FREEING, &md->flags))) {
+			md = NULL;
+			goto out;
+		}
+		dm_get(md);
 	}
 
 out:
 	spin_unlock(&_minor_lock);
-
-	return md;
-}
-
-struct mapped_device *dm_get_md(dev_t dev)
-{
-	struct mapped_device *md = dm_find_md(dev);
-
-	if (md)
-		dm_get(md);
 
 	return md;
 }
@@ -2388,10 +2439,16 @@ static void __dm_destroy(struct mapped_device *md, bool wait)
 	set_bit(DMF_FREEING, &md->flags);
 	spin_unlock(&_minor_lock);
 
+	/*
+	 * Take suspend_lock so that presuspend and postsuspend methods
+	 * do not race with internal suspend.
+	 */
+	mutex_lock(&md->suspend_lock);
 	if (!dm_suspended_md(md)) {
 		dm_table_presuspend_targets(map);
 		dm_table_postsuspend_targets(map);
 	}
+	mutex_unlock(&md->suspend_lock);
 
 	/* dm_put_live_table must be before msleep, otherwise deadlock is possible */
 	dm_put_live_table(md, srcu_idx);
@@ -2637,7 +2694,8 @@ int dm_suspend(struct mapped_device *md, unsigned suspend_flags)
 	 * flush_workqueue(md->wq).
 	 */
 	set_bit(DMF_BLOCK_IO_FOR_SUSPEND, &md->flags);
-	synchronize_srcu(&md->io_barrier);
+	if (map)
+		synchronize_srcu(&md->io_barrier);
 
 	/*
 	 * Stop md->queue before flushing md->wq in case request-based
@@ -2657,7 +2715,8 @@ int dm_suspend(struct mapped_device *md, unsigned suspend_flags)
 
 	if (noflush)
 		clear_bit(DMF_NOFLUSH_SUSPENDING, &md->flags);
-	synchronize_srcu(&md->io_barrier);
+	if (map)
+		synchronize_srcu(&md->io_barrier);
 
 	/* were we interrupted ? */
 	if (r < 0) {
@@ -2810,20 +2869,14 @@ struct gendisk *dm_disk(struct mapped_device *md)
 
 struct kobject *dm_kobject(struct mapped_device *md)
 {
-	return &md->kobj;
+	return &md->kobj_holder.kobj;
 }
 
-/*
- * struct mapped_device should not be exported outside of dm.c
- * so use this check to verify that kobj is part of md structure
- */
 struct mapped_device *dm_get_from_kobject(struct kobject *kobj)
 {
 	struct mapped_device *md;
 
-	md = container_of(kobj, struct mapped_device, kobj);
-	if (&md->kobj != kobj)
-		return NULL;
+	md = container_of(kobj, struct mapped_device, kobj_holder.kobj);
 
 	if (test_bit(DMF_FREEING, &md->flags) ||
 	    dm_deleting_md(md))
@@ -2862,18 +2915,18 @@ struct dm_md_mempools *dm_alloc_md_mempools(unsigned type, unsigned integrity, u
 
 	if (type == DM_TYPE_BIO_BASED) {
 		cachep = _io_cache;
-		pool_size = 16;
+		pool_size = dm_get_reserved_bio_based_ios();
 		front_pad = roundup(per_bio_data_size, __alignof__(struct dm_target_io)) + offsetof(struct dm_target_io, clone);
 	} else if (type == DM_TYPE_REQUEST_BASED) {
 		cachep = _rq_tio_cache;
-		pool_size = MIN_IOS;
+		pool_size = dm_get_reserved_rq_based_ios();
 		front_pad = offsetof(struct dm_rq_clone_bio_info, clone);
 		/* per_bio_data_size is not used. See __bind_mempools(). */
 		WARN_ON(per_bio_data_size != 0);
 	} else
 		goto out;
 
-	pools->io_pool = mempool_create_slab_pool(MIN_IOS, cachep);
+	pools->io_pool = mempool_create_slab_pool(pool_size, cachep);
 	if (!pools->io_pool)
 		goto out;
 
@@ -2924,6 +2977,13 @@ module_exit(dm_exit);
 
 module_param(major, uint, 0);
 MODULE_PARM_DESC(major, "The major number of the device mapper");
+
+module_param(reserved_bio_based_ios, uint, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(reserved_bio_based_ios, "Reserved IOs in bio-based mempools");
+
+module_param(reserved_rq_based_ios, uint, S_IRUGO | S_IWUSR);
+MODULE_PARM_DESC(reserved_rq_based_ios, "Reserved IOs in request-based mempools");
+
 MODULE_DESCRIPTION(DM_NAME " driver");
 MODULE_AUTHOR("Joe Thornber <dm-devel@redhat.com>");
 MODULE_LICENSE("GPL");

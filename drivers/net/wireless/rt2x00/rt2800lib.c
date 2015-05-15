@@ -3152,7 +3152,9 @@ static void rt2800_config_channel(struct rt2x00_dev *rt2x00dev,
 	case RF3322:
 		rt2800_config_channel_rf3322(rt2x00dev, conf, rf, info);
 		break;
+	case RF3070:
 	case RF5360:
+	case RF5362:
 	case RF5370:
 	case RF5372:
 	case RF5390:
@@ -3166,9 +3168,11 @@ static void rt2800_config_channel(struct rt2x00_dev *rt2x00dev,
 		rt2800_config_channel_rf2xxx(rt2x00dev, conf, rf, info);
 	}
 
-	if (rt2x00_rf(rt2x00dev, RF3290) ||
+	if (rt2x00_rf(rt2x00dev, RF3070) ||
+	    rt2x00_rf(rt2x00dev, RF3290) ||
 	    rt2x00_rf(rt2x00dev, RF3322) ||
 	    rt2x00_rf(rt2x00dev, RF5360) ||
+	    rt2x00_rf(rt2x00dev, RF5362) ||
 	    rt2x00_rf(rt2x00dev, RF5370) ||
 	    rt2x00_rf(rt2x00dev, RF5372) ||
 	    rt2x00_rf(rt2x00dev, RF5390) ||
@@ -4264,8 +4268,10 @@ void rt2800_vco_calibration(struct rt2x00_dev *rt2x00dev)
 		rt2800_rfcsr_write(rt2x00dev, 7, rfcsr);
 		break;
 	case RF3053:
+	case RF3070:
 	case RF3290:
 	case RF5360:
+	case RF5362:
 	case RF5370:
 	case RF5372:
 	case RF5390:
@@ -4461,10 +4467,13 @@ void rt2800_link_tuner(struct rt2x00_dev *rt2x00dev, struct link_qual *qual,
 
 	vgc = rt2800_get_default_vgc(rt2x00dev);
 
-	if (rt2x00_rt(rt2x00dev, RT5592) && qual->rssi > -65)
-		vgc += 0x20;
-	else if (qual->rssi > -80)
-		vgc += 0x10;
+	if (rt2x00_rt(rt2x00dev, RT5592)) {
+		if (qual->rssi > -65)
+			vgc += 0x20;
+	} else {
+		if (qual->rssi > -80)
+			vgc += 0x10;
+	}
 
 	rt2800_set_vgc(rt2x00dev, qual, vgc);
 }
@@ -6659,19 +6668,20 @@ int rt2800_enable_radio(struct rt2x00_dev *rt2x00dev)
 		     rt2800_init_registers(rt2x00dev)))
 		return -EIO;
 
+	if (unlikely(rt2800_wait_bbp_rf_ready(rt2x00dev)))
+		return -EIO;
+
 	/*
 	 * Send signal to firmware during boot time.
 	 */
 	rt2800_register_write(rt2x00dev, H2M_BBP_AGENT, 0);
 	rt2800_register_write(rt2x00dev, H2M_MAILBOX_CSR, 0);
-	if (rt2x00_is_usb(rt2x00dev)) {
+	if (rt2x00_is_usb(rt2x00dev))
 		rt2800_register_write(rt2x00dev, H2M_INT_SRC, 0);
-		rt2800_mcu_request(rt2x00dev, MCU_BOOT_SIGNAL, 0, 0, 0);
-	}
+	rt2800_mcu_request(rt2x00dev, MCU_BOOT_SIGNAL, 0, 0, 0);
 	msleep(1);
 
-	if (unlikely(rt2800_wait_bbp_rf_ready(rt2x00dev) ||
-		     rt2800_wait_bbp_ready(rt2x00dev)))
+	if (unlikely(rt2800_wait_bbp_ready(rt2x00dev)))
 		return -EIO;
 
 	rt2800_init_bbp(rt2x00dev);
@@ -7020,10 +7030,12 @@ static int rt2800_init_eeprom(struct rt2x00_dev *rt2x00dev)
 	case RF3022:
 	case RF3052:
 	case RF3053:
+	case RF3070:
 	case RF3290:
 	case RF3320:
 	case RF3322:
 	case RF5360:
+	case RF5362:
 	case RF5370:
 	case RF5372:
 	case RF5390:
@@ -7542,10 +7554,12 @@ static int rt2800_probe_hw_mode(struct rt2x00_dev *rt2x00dev)
 		   rt2x00_rf(rt2x00dev, RF2020) ||
 		   rt2x00_rf(rt2x00dev, RF3021) ||
 		   rt2x00_rf(rt2x00dev, RF3022) ||
+		   rt2x00_rf(rt2x00dev, RF3070) ||
 		   rt2x00_rf(rt2x00dev, RF3290) ||
 		   rt2x00_rf(rt2x00dev, RF3320) ||
 		   rt2x00_rf(rt2x00dev, RF3322) ||
 		   rt2x00_rf(rt2x00dev, RF5360) ||
+		   rt2x00_rf(rt2x00dev, RF5362) ||
 		   rt2x00_rf(rt2x00dev, RF5370) ||
 		   rt2x00_rf(rt2x00dev, RF5372) ||
 		   rt2x00_rf(rt2x00dev, RF5390) ||
@@ -7670,8 +7684,10 @@ static int rt2800_probe_hw_mode(struct rt2x00_dev *rt2x00dev)
 	case RF3320:
 	case RF3052:
 	case RF3053:
+	case RF3070:
 	case RF3290:
 	case RF5360:
+	case RF5362:
 	case RF5370:
 	case RF5372:
 	case RF5390:

@@ -497,6 +497,8 @@ static int ci_hdrc_probe(struct platform_device *pdev)
 		ci->transceiver = ci->platdata->phy;
 	else
 		ci->global_phy = true;
+	ci->imx28_write_fix = !!(ci->platdata->flags &
+		CI_HDRC_IMX28_WRITE_FIX);
 
 	ret = hw_device_init(ci, base);
 	if (ret < 0) {
@@ -575,6 +577,10 @@ static int ci_hdrc_probe(struct platform_device *pdev)
 			: CI_ROLE_GADGET;
 	}
 
+	/* only update vbus status for peripheral */
+	if (ci->role == CI_ROLE_GADGET)
+		ci_handle_vbus_change(ci);
+
 	ret = ci_role_start(ci, ci->role);
 	if (ret) {
 		dev_err(dev, "can't start %s role\n", ci_role(ci)->name);
@@ -605,6 +611,7 @@ static int ci_hdrc_remove(struct platform_device *pdev)
 	dbg_remove_files(ci);
 	free_irq(ci->irq, ci);
 	ci_role_destroy(ci);
+	kfree(ci->hw_bank.regmap);
 
 	return 0;
 }

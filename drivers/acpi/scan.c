@@ -331,8 +331,6 @@ static void acpi_scan_bus_device_check(acpi_handle handle, u32 ost_source)
 			goto out;
 		}
 	}
-	acpi_evaluate_hotplug_ost(handle, ost_source,
-				  ACPI_OST_SC_INSERT_IN_PROGRESS, NULL);
 	error = acpi_bus_scan(handle);
 	if (error) {
 		acpi_handle_warn(handle, "Namespace scan failure\n");
@@ -836,12 +834,17 @@ static void acpi_device_notify(acpi_handle handle, u32 event, void *data)
 	device->driver->ops.notify(device, event);
 }
 
-static acpi_status acpi_device_notify_fixed(void *data)
+static void acpi_device_notify_fixed(void *data)
 {
 	struct acpi_device *device = data;
 
 	/* Fixed hardware devices have no handles */
 	acpi_device_notify(NULL, ACPI_FIXED_HARDWARE_EVENT, device);
+}
+
+static acpi_status acpi_device_fixed_event(void *data)
+{
+	acpi_os_execute(OSL_NOTIFY_HANDLER, acpi_device_notify_fixed, data);
 	return AE_OK;
 }
 
@@ -852,12 +855,12 @@ static int acpi_device_install_notify_handler(struct acpi_device *device)
 	if (device->device_type == ACPI_BUS_TYPE_POWER_BUTTON)
 		status =
 		    acpi_install_fixed_event_handler(ACPI_EVENT_POWER_BUTTON,
-						     acpi_device_notify_fixed,
+						     acpi_device_fixed_event,
 						     device);
 	else if (device->device_type == ACPI_BUS_TYPE_SLEEP_BUTTON)
 		status =
 		    acpi_install_fixed_event_handler(ACPI_EVENT_SLEEP_BUTTON,
-						     acpi_device_notify_fixed,
+						     acpi_device_fixed_event,
 						     device);
 	else
 		status = acpi_install_notify_handler(device->handle,
@@ -874,10 +877,10 @@ static void acpi_device_remove_notify_handler(struct acpi_device *device)
 {
 	if (device->device_type == ACPI_BUS_TYPE_POWER_BUTTON)
 		acpi_remove_fixed_event_handler(ACPI_EVENT_POWER_BUTTON,
-						acpi_device_notify_fixed);
+						acpi_device_fixed_event);
 	else if (device->device_type == ACPI_BUS_TYPE_SLEEP_BUTTON)
 		acpi_remove_fixed_event_handler(ACPI_EVENT_SLEEP_BUTTON,
-						acpi_device_notify_fixed);
+						acpi_device_fixed_event);
 	else
 		acpi_remove_notify_handler(device->handle, ACPI_DEVICE_NOTIFY,
 					   acpi_device_notify);
@@ -968,7 +971,7 @@ int acpi_bus_get_device(acpi_handle handle, struct acpi_device **device)
 	}
 	return 0;
 }
-EXPORT_SYMBOL_GPL(acpi_bus_get_device);
+EXPORT_SYMBOL(acpi_bus_get_device);
 
 int acpi_device_add(struct acpi_device *device,
 		    void (*release)(struct device *))
@@ -999,7 +1002,6 @@ int acpi_device_add(struct acpi_device *device,
 	INIT_LIST_HEAD(&device->wakeup_list);
 	INIT_LIST_HEAD(&device->physical_node_list);
 	mutex_init(&device->physical_node_lock);
-	INIT_LIST_HEAD(&device->power_dependent);
 
 	new_bus_id = kzalloc(sizeof(struct acpi_device_bus_id), GFP_KERNEL);
 	if (!new_bus_id) {
@@ -1121,7 +1123,7 @@ int acpi_bus_register_driver(struct acpi_driver *driver)
 EXPORT_SYMBOL(acpi_bus_register_driver);
 
 /**
- * acpi_bus_unregister_driver - unregisters a driver with the APIC bus
+ * acpi_bus_unregister_driver - unregisters a driver with the ACPI bus
  * @driver: driver to unregister
  *
  * Unregisters a driver with the ACPI bus.  Searches the namespace for all
@@ -1815,7 +1817,7 @@ static void acpi_scan_init_hotplug(acpi_handle handle, int type)
 	 */
 	list_for_each_entry(hwid, &pnp.ids, list) {
 		handler = acpi_scan_match_handler(hwid->id, NULL);
-		if (handler) {
+		if (handler && !handler->hotplug.ignore) {
 			acpi_install_notify_handler(handle, ACPI_SYSTEM_NOTIFY,
 					acpi_hotplug_notify_cb, handler);
 			break;

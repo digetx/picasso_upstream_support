@@ -52,6 +52,7 @@
 
 #include <asm/processor.h>
 #include <asm/io.h>
+#include <asm/ioctl.h>
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
 
@@ -463,7 +464,7 @@ static struct kvm *kvm_create_vm(unsigned long type)
 	BUILD_BUG_ON(KVM_MEM_SLOTS_NUM > SHRT_MAX);
 
 	r = -ENOMEM;
-	kvm->memslots = kzalloc(sizeof(struct kvm_memslots), GFP_KERNEL);
+	kvm->memslots = kvm_kvzalloc(sizeof(struct kvm_memslots));
 	if (!kvm->memslots)
 		goto out_err_nosrcu;
 	kvm_init_memslots_id(kvm);
@@ -503,7 +504,7 @@ out_err_nosrcu:
 out_err_nodisable:
 	for (i = 0; i < KVM_NR_BUSES; i++)
 		kfree(kvm->buses[i]);
-	kfree(kvm->memslots);
+	kvfree(kvm->memslots);
 	kvm_arch_free_vm(kvm);
 	return ERR_PTR(r);
 }
@@ -559,7 +560,7 @@ void kvm_free_physmem(struct kvm *kvm)
 	kvm_for_each_memslot(memslot, slots)
 		kvm_free_physmem_slot(memslot, NULL);
 
-	kfree(kvm->memslots);
+	kvfree(kvm->memslots);
 }
 
 static void kvm_destroy_devices(struct kvm *kvm)
@@ -673,8 +674,7 @@ static void sort_memslots(struct kvm_memslots *slots)
 		slots->id_to_index[slots->memslots[i].id] = i;
 }
 
-void update_memslots(struct kvm_memslots *slots, struct kvm_memory_slot *new,
-		     u64 last_generation)
+void update_memslots(struct kvm_memslots *slots, struct kvm_memory_slot *new)
 {
 	if (new) {
 		int id = new->id;
@@ -685,8 +685,6 @@ void update_memslots(struct kvm_memslots *slots, struct kvm_memory_slot *new,
 		if (new->npages != npages)
 			sort_memslots(slots);
 	}
-
-	slots->generation = last_generation + 1;
 }
 
 static int check_memory_region_flags(struct kvm_userspace_memory_region *mem)
@@ -708,9 +706,23 @@ static struct kvm_memslots *install_new_memslots(struct kvm *kvm,
 {
 	struct kvm_memslots *old_memslots = kvm->memslots;
 
-	update_memslots(slots, new, kvm->memslots->generation);
+	/*
+	 * Set the low bit in the generation, which disables SPTE caching
+	 * until the end of synchronize_srcu_expedited.
+	 */
+	WARN_ON(old_memslots->generation & 1);
+	slots->generation = old_memslots->generation + 1;
+
+	update_memslots(slots, new);
 	rcu_assign_pointer(kvm->memslots, slots);
 	synchronize_srcu_expedited(&kvm->srcu);
+
+	/*
+	 * Increment the new memslot generation a second time. This prevents
+	 * vm exits that race with memslot updates from caching a memslot
+	 * generation that will (potentially) be valid forever.
+	 */
+	slots->generation++;
 
 	kvm_arch_memslots_updated(kvm);
 
@@ -762,7 +774,6 @@ int __kvm_set_memory_region(struct kvm *kvm,
 	base_gfn = mem->guest_phys_addr >> PAGE_SHIFT;
 	npages = mem->memory_size >> PAGE_SHIFT;
 
-	r = -EINVAL;
 	if (npages > KVM_MEM_MAX_NR_PAGES)
 		goto out;
 
@@ -776,7 +787,6 @@ int __kvm_set_memory_region(struct kvm *kvm,
 	new.npages = npages;
 	new.flags = mem->flags;
 
-	r = -EINVAL;
 	if (npages) {
 		if (!old.npages)
 			change = KVM_MR_CREATE;
@@ -831,12 +841,12 @@ int __kvm_set_memory_region(struct kvm *kvm,
 			goto out_free;
 	}
 
+	slots = kvm_kvzalloc(sizeof(struct kvm_memslots));
+	if (!slots)
+		goto out_free;
+	memcpy(slots, kvm->memslots, sizeof(struct kvm_memslots));
+
 	if ((change == KVM_MR_DELETE) || (change == KVM_MR_MOVE)) {
-		r = -ENOMEM;
-		slots = kmemdup(kvm->memslots, sizeof(struct kvm_memslots),
-				GFP_KERNEL);
-		if (!slots)
-			goto out_free;
 		slot = id_to_memslot(slots, mem->slot);
 		slot->flags |= KVM_MEMSLOT_INVALID;
 
@@ -852,25 +862,18 @@ int __kvm_set_memory_region(struct kvm *kvm,
 		 * 	- kvm_is_visible_gfn (mmu_check_roots)
 		 */
 		kvm_arch_flush_shadow_memslot(kvm, slot);
+
+		/*
+		 * We can re-use the old_memslots from above, the only difference
+		 * from the currently installed memslots is the invalid flag.  This
+		 * will get overwritten by update_memslots anyway.
+		 */
 		slots = old_memslots;
 	}
 
 	r = kvm_arch_prepare_memory_region(kvm, &new, mem, change);
 	if (r)
 		goto out_slots;
-
-	r = -ENOMEM;
-	/*
-	 * We can re-use the old_memslots from above, the only difference
-	 * from the currently installed memslots is the invalid flag.  This
-	 * will get overwritten by update_memslots anyway.
-	 */
-	if (!slots) {
-		slots = kmemdup(kvm->memslots, sizeof(struct kvm_memslots),
-				GFP_KERNEL);
-		if (!slots)
-			goto out_free;
-	}
 
 	/*
 	 * IOMMU mapping:  New slots need to be mapped.  Old slots need to be
@@ -898,12 +901,12 @@ int __kvm_set_memory_region(struct kvm *kvm,
 	kvm_arch_commit_memory_region(kvm, mem, &old, change);
 
 	kvm_free_physmem_slot(&old, &new);
-	kfree(old_memslots);
+	kvfree(old_memslots);
 
 	return 0;
 
 out_slots:
-	kfree(slots);
+	kvfree(slots);
 out_free:
 	kvm_free_physmem_slot(&new, &old);
 out:
@@ -1058,12 +1061,18 @@ unsigned long gfn_to_hva(struct kvm *kvm, gfn_t gfn)
 EXPORT_SYMBOL_GPL(gfn_to_hva);
 
 /*
- * The hva returned by this function is only allowed to be read.
- * It should pair with kvm_read_hva() or kvm_read_hva_atomic().
+ * If writable is set to false, the hva returned by this function is only
+ * allowed to be read.
  */
-static unsigned long gfn_to_hva_read(struct kvm *kvm, gfn_t gfn)
+unsigned long gfn_to_hva_prot(struct kvm *kvm, gfn_t gfn, bool *writable)
 {
-	return __gfn_to_hva_many(gfn_to_memslot(kvm, gfn), gfn, NULL, false);
+	struct kvm_memory_slot *slot = gfn_to_memslot(kvm, gfn);
+	unsigned long hva = __gfn_to_hva_many(slot, gfn, NULL, false);
+
+	if (!kvm_is_error_hva(hva) && writable)
+		*writable = !memslot_is_readonly(slot);
+
+	return hva;
 }
 
 static int kvm_read_hva(void *data, void __user *hva, int len)
@@ -1430,7 +1439,7 @@ int kvm_read_guest_page(struct kvm *kvm, gfn_t gfn, void *data, int offset,
 	int r;
 	unsigned long addr;
 
-	addr = gfn_to_hva_read(kvm, gfn);
+	addr = gfn_to_hva_prot(kvm, gfn, NULL);
 	if (kvm_is_error_hva(addr))
 		return -EFAULT;
 	r = kvm_read_hva(data, (void __user *)addr + offset, len);
@@ -1468,7 +1477,7 @@ int kvm_read_guest_atomic(struct kvm *kvm, gpa_t gpa, void *data,
 	gfn_t gfn = gpa >> PAGE_SHIFT;
 	int offset = offset_in_page(gpa);
 
-	addr = gfn_to_hva_read(kvm, gfn);
+	addr = gfn_to_hva_prot(kvm, gfn, NULL);
 	if (kvm_is_error_hva(addr))
 		return -EFAULT;
 	pagefault_disable();
@@ -1887,6 +1896,9 @@ static int kvm_vm_ioctl_create_vcpu(struct kvm *kvm, u32 id)
 	int r;
 	struct kvm_vcpu *vcpu, *v;
 
+	if (id >= KVM_MAX_VCPUS)
+		return -EINVAL;
+
 	vcpu = kvm_arch_vcpu_create(kvm, id);
 	if (IS_ERR(vcpu))
 		return PTR_ERR(vcpu);
@@ -1960,6 +1972,9 @@ static long kvm_vcpu_ioctl(struct file *filp,
 
 	if (vcpu->kvm->mm != current->mm)
 		return -EIO;
+
+	if (unlikely(_IOC_TYPE(ioctl) != KVMIO))
+		return -EINVAL;
 
 #if defined(CONFIG_S390) || defined(CONFIG_PPC) || defined(CONFIG_MIPS)
 	/*
@@ -3085,7 +3100,7 @@ static const struct file_operations *stat_fops[] = {
 
 static int kvm_init_debug(void)
 {
-	int r = -EFAULT;
+	int r = -EEXIST;
 	struct kvm_stats_debugfs_item *p;
 
 	kvm_debugfs_dir = debugfs_create_dir("kvm", NULL);

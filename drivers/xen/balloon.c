@@ -398,8 +398,6 @@ static enum bp_state decrease_reservation(unsigned long nr_pages, gfp_t gfp)
 	if (nr_pages > ARRAY_SIZE(frame_list))
 		nr_pages = ARRAY_SIZE(frame_list);
 
-	scratch_page = get_balloon_scratch_page();
-
 	for (i = 0; i < nr_pages; i++) {
 		page = alloc_page(gfp);
 		if (page == NULL) {
@@ -407,12 +405,32 @@ static enum bp_state decrease_reservation(unsigned long nr_pages, gfp_t gfp)
 			state = BP_EAGAIN;
 			break;
 		}
-
-		pfn = page_to_pfn(page);
-		frame_list[i] = pfn_to_mfn(pfn);
-
 		scrub_page(page);
 
+		frame_list[i] = page_to_pfn(page);
+	}
+
+	/*
+	 * Ensure that ballooned highmem pages don't have kmaps.
+	 *
+	 * Do this before changing the p2m as kmap_flush_unused()
+	 * reads PTEs to obtain pages (and hence needs the original
+	 * p2m entry).
+	 */
+	kmap_flush_unused();
+
+	/* Update direct mapping, invalidate P2M, and add to balloon. */
+	for (i = 0; i < nr_pages; i++) {
+		pfn = frame_list[i];
+		frame_list[i] = pfn_to_mfn(pfn);
+		page = pfn_to_page(pfn);
+
+		/*
+		 * Ballooned out frames are effectively replaced with
+		 * a scratch frame.  Ensure direct mappings and the
+		 * p2m are consistent.
+		 */
+		scratch_page = get_balloon_scratch_page();
 #ifdef CONFIG_XEN_HAVE_PVMMU
 		if (xen_pv_domain() && !PageHighMem(page)) {
 			ret = HYPERVISOR_update_va_mapping(
@@ -422,24 +440,17 @@ static enum bp_state decrease_reservation(unsigned long nr_pages, gfp_t gfp)
 			BUG_ON(ret);
 		}
 #endif
-	}
-
-	/* Ensure that ballooned highmem pages don't have kmaps. */
-	kmap_flush_unused();
-	flush_tlb_all();
-
-	/* No more mappings: invalidate P2M and add to balloon. */
-	for (i = 0; i < nr_pages; i++) {
-		pfn = mfn_to_pfn(frame_list[i]);
 		if (!xen_feature(XENFEAT_auto_translated_physmap)) {
 			unsigned long p;
 			p = page_to_pfn(scratch_page);
 			__set_phys_to_machine(pfn, pfn_to_mfn(p));
 		}
-		balloon_append(pfn_to_page(pfn));
+		put_balloon_scratch_page();
+
+		balloon_append(page);
 	}
 
-	put_balloon_scratch_page();
+	flush_tlb_all();
 
 	set_xen_guest_handle(reservation.extent_start, frame_list);
 	reservation.nr_extents   = nr_pages;

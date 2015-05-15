@@ -1592,6 +1592,16 @@ static void i9xx_update_wm(struct drm_device *dev)
 
 	DRM_DEBUG_KMS("FIFO watermarks - A: %d, B: %d\n", planea_wm, planeb_wm);
 
+	if (IS_I915GM(dev) && enabled) {
+		struct intel_framebuffer *fb;
+
+		fb = to_intel_framebuffer(enabled->fb);
+
+		/* self-refresh seems busted with untiled */
+		if (fb->obj->tiling_mode == I915_TILING_NONE)
+			enabled = NULL;
+	}
+
 	/*
 	 * Overlay gets an aggressive default since video jitter is bad.
 	 */
@@ -2096,16 +2106,16 @@ static uint32_t ilk_pipe_pixel_rate(struct drm_device *dev,
 				    struct drm_crtc *crtc)
 {
 	struct intel_crtc *intel_crtc = to_intel_crtc(crtc);
-	uint32_t pixel_rate, pfit_size;
+	uint32_t pixel_rate;
 
 	pixel_rate = intel_crtc->config.adjusted_mode.clock;
 
 	/* We only use IF-ID interlacing. If we ever use PF-ID we'll need to
 	 * adjust the pixel_rate here. */
 
-	pfit_size = intel_crtc->config.pch_pfit.size;
-	if (pfit_size) {
+	if (intel_crtc->config.pch_pfit.enabled) {
 		uint64_t pipe_w, pipe_h, pfit_w, pfit_h;
+		uint32_t pfit_size = intel_crtc->config.pch_pfit.size;
 
 		pipe_w = intel_crtc->config.requested_mode.hdisplay;
 		pipe_h = intel_crtc->config.requested_mode.vdisplay;
@@ -3864,8 +3874,6 @@ static void valleyview_enable_rps(struct drm_device *dev)
 				      dev_priv->rps.rpe_delay),
 			 dev_priv->rps.rpe_delay);
 
-	INIT_DELAYED_WORK(&dev_priv->rps.vlv_work, vlv_rps_timer_work);
-
 	valleyview_set_rps(dev_priv->dev, dev_priv->rps.rpe_delay);
 
 	gen6_enable_rps_interrupts(dev);
@@ -4761,7 +4769,9 @@ static void cpt_init_clock_gating(struct drm_device *dev)
 	 * gating for the panel power sequencer or it will fail to
 	 * start up when no ports are active.
 	 */
-	I915_WRITE(SOUTH_DSPCLK_GATE_D, PCH_DPLSUNIT_CLOCK_GATE_DISABLE);
+	I915_WRITE(SOUTH_DSPCLK_GATE_D, PCH_DPLSUNIT_CLOCK_GATE_DISABLE |
+		   PCH_DPLUNIT_CLOCK_GATE_DISABLE |
+		   PCH_CPUNIT_CLOCK_GATE_DISABLE);
 	I915_WRITE(SOUTH_CHICKEN2, I915_READ(SOUTH_CHICKEN2) |
 		   DPLS_EDP_PPS_FIX_DIS);
 	/* The below fixes the weird display corruption, a few pixels shifted
@@ -4954,6 +4964,11 @@ static void haswell_init_clock_gating(struct drm_device *dev)
 			GEN7_WA_FOR_GEN7_L3_CONTROL);
 	I915_WRITE(GEN7_L3_CHICKEN_MODE_REGISTER,
 			GEN7_WA_L3_CHICKEN_MODE);
+
+	/* L3 caching of data atomics doesn't work -- disable it. */
+	I915_WRITE(HSW_SCRATCH1, HSW_SCRATCH1_L3_DATA_ATOMICS_DISABLE);
+	I915_WRITE(HSW_ROW_CHICKEN3,
+		   _MASKED_BIT_ENABLE(HSW_ROW_CHICKEN3_L3_GLOBAL_ATOMICS_DISABLE));
 
 	/* This is required by WaCatErrorRejectionIssue:hsw */
 	I915_WRITE(GEN7_SQ_CHICKEN_MBCUNIT_CONFIG,
@@ -5332,24 +5347,26 @@ static void __intel_set_power_well(struct drm_device *dev, bool enable)
 static struct i915_power_well *hsw_pwr;
 
 /* Display audio driver power well request */
-void i915_request_power_well(void)
+int i915_request_power_well(void)
 {
-	if (WARN_ON(!hsw_pwr))
-		return;
+	if (!hsw_pwr)
+		return -ENODEV;
 
 	spin_lock_irq(&hsw_pwr->lock);
 	if (!hsw_pwr->count++ &&
 			!hsw_pwr->i915_request)
 		__intel_set_power_well(hsw_pwr->device, true);
 	spin_unlock_irq(&hsw_pwr->lock);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(i915_request_power_well);
 
 /* Display audio driver power well release */
-void i915_release_power_well(void)
+int i915_release_power_well(void)
 {
-	if (WARN_ON(!hsw_pwr))
-		return;
+	if (!hsw_pwr)
+		return -ENODEV;
+
 
 	spin_lock_irq(&hsw_pwr->lock);
 	WARN_ON(!hsw_pwr->count);
@@ -5357,8 +5374,29 @@ void i915_release_power_well(void)
 		       !hsw_pwr->i915_request)
 		__intel_set_power_well(hsw_pwr->device, false);
 	spin_unlock_irq(&hsw_pwr->lock);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(i915_release_power_well);
+
+/*
+ * Private interface for the audio driver to get CDCLK in kHz.
+ *
+ * Caller must request power well using i915_request_power_well() prior to
+ * making the call.
+ */
+int i915_get_cdclk_freq(void)
+{
+	struct drm_i915_private *dev_priv;
+
+	if (!hsw_pwr)
+		return -ENODEV;
+
+	dev_priv = container_of(hsw_pwr, struct drm_i915_private,
+				power_well);
+
+	return intel_ddi_get_cdclk_freq(dev_priv);
+}
+EXPORT_SYMBOL_GPL(i915_get_cdclk_freq);
 
 int i915_init_power_well(struct drm_device *dev)
 {
@@ -5681,5 +5719,7 @@ void intel_pm_init(struct drm_device *dev)
 
 	INIT_DELAYED_WORK(&dev_priv->rps.delayed_resume_work,
 			  intel_gen6_powersave_work);
+
+	INIT_DELAYED_WORK(&dev_priv->rps.vlv_work, vlv_rps_timer_work);
 }
 

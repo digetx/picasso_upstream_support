@@ -279,7 +279,9 @@ static acpi_status register_slot(acpi_handle handle, u32 lvl, void *data,
 
 	status = acpi_evaluate_integer(handle, "_ADR", NULL, &adr);
 	if (ACPI_FAILURE(status)) {
-		acpi_handle_warn(handle, "can't evaluate _ADR (%#x)\n", status);
+		if (status != AE_NOT_FOUND)
+			acpi_handle_warn(handle,
+				"can't evaluate _ADR (%#x)\n", status);
 		return AE_OK;
 	}
 
@@ -552,9 +554,8 @@ static void __ref enable_slot(struct acpiphp_slot *slot)
 	struct acpiphp_func *func;
 	int max, pass;
 	LIST_HEAD(add_list);
-	int nr_found;
 
-	nr_found = acpiphp_rescan_slot(slot);
+	acpiphp_rescan_slot(slot);
 	max = acpiphp_max_busnr(bus);
 	for (pass = 0; pass < 2; pass++) {
 		list_for_each_entry(dev, &bus->devices, bus_list) {
@@ -574,9 +575,6 @@ static void __ref enable_slot(struct acpiphp_slot *slot)
 		}
 	}
 	__pci_bus_assign_resources(bus, &add_list, NULL);
-	/* Nothing more to do here if there are no new devices on this bus. */
-	if (!nr_found && (slot->flags & SLOT_ENABLED))
-		return;
 
 	acpiphp_sanitize_bus(bus);
 	acpiphp_set_hpp_values(bus);
@@ -647,6 +645,24 @@ static void disable_slot(struct acpiphp_slot *slot)
 	slot->flags &= (~SLOT_ENABLED);
 }
 
+static bool acpiphp_no_hotplug(acpi_handle handle)
+{
+	struct acpi_device *adev = NULL;
+
+	acpi_bus_get_device(handle, &adev);
+	return adev && adev->flags.no_hotplug;
+}
+
+static bool slot_no_hotplug(struct acpiphp_slot *slot)
+{
+	struct acpiphp_func *func;
+
+	list_for_each_entry(func, &slot->funcs, sibling)
+		if (acpiphp_no_hotplug(func_to_handle(func)))
+			return true;
+
+	return false;
+}
 
 /**
  * get_slot_status - get ACPI slot status
@@ -690,6 +706,17 @@ static unsigned int get_slot_status(struct acpiphp_slot *slot)
 	return (unsigned int)sta;
 }
 
+static inline bool device_status_valid(unsigned int sta)
+{
+	/*
+	 * ACPI spec says that _STA may return bit 0 clear with bit 3 set
+	 * if the device is valid but does not require a device driver to be
+	 * loaded (Section 6.3.7 of ACPI 5.0A).
+	 */
+	unsigned int mask = ACPI_STA_DEVICE_ENABLED | ACPI_STA_DEVICE_FUNCTIONING;
+	return (sta & mask) == mask;
+}
+
 /**
  * trim_stale_devices - remove PCI devices that are not responding.
  * @dev: PCI device to start walking the hierarchy from.
@@ -705,7 +732,8 @@ static void trim_stale_devices(struct pci_dev *dev)
 		unsigned long long sta;
 
 		status = acpi_evaluate_integer(handle, "_STA", NULL, &sta);
-		alive = ACPI_SUCCESS(status) && sta == ACPI_STA_ALL;
+		alive = (ACPI_SUCCESS(status) && device_status_valid(sta))
+			|| acpiphp_no_hotplug(handle);
 	}
 	if (!alive) {
 		u32 v;
@@ -745,8 +773,9 @@ static void acpiphp_check_bridge(struct acpiphp_bridge *bridge)
 		struct pci_dev *dev, *tmp;
 
 		mutex_lock(&slot->crit_sect);
-		/* wake up all functions */
-		if (get_slot_status(slot) == ACPI_STA_ALL) {
+		if (slot_no_hotplug(slot)) {
+			; /* do nothing */
+		} else if (device_status_valid(get_slot_status(slot))) {
 			/* remove stale devices if any */
 			list_for_each_entry_safe(dev, tmp, &bus->devices,
 						 bus_list)
@@ -994,14 +1023,16 @@ void acpiphp_enumerate_slots(struct pci_bus *bus)
 
 		/*
 		 * This bridge should have been registered as a hotplug function
-		 * under its parent, so the context has to be there.  If not, we
-		 * are in deep goo.
+		 * under its parent, so the context should be there, unless the
+		 * parent is going to be handled by pciehp, in which case this
+		 * bridge is not interesting to us either.
 		 */
 		mutex_lock(&acpiphp_context_lock);
 		context = acpiphp_get_context(handle);
-		if (WARN_ON(!context)) {
+		if (!context) {
 			mutex_unlock(&acpiphp_context_lock);
 			put_device(&bus->dev);
+			pci_dev_put(bridge->pci_dev);
 			kfree(bridge);
 			return;
 		}

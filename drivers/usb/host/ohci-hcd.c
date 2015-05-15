@@ -78,8 +78,8 @@ static const char	hcd_name [] = "ohci_hcd";
 #include "ohci.h"
 #include "pci-quirks.h"
 
-static void ohci_dump (struct ohci_hcd *ohci, int verbose);
-static void ohci_stop (struct usb_hcd *hcd);
+static void ohci_dump(struct ohci_hcd *ohci);
+static void ohci_stop(struct usb_hcd *hcd);
 
 #include "ohci-hub.c"
 #include "ohci-dbg.c"
@@ -216,31 +216,26 @@ static int ohci_urb_enqueue (
 			frame &= ~(ed->interval - 1);
 			frame |= ed->branch;
 			urb->start_frame = frame;
+			ed->last_iso = frame + ed->interval * (size - 1);
 		}
 	} else if (ed->type == PIPE_ISOCHRONOUS) {
 		u16	next = ohci_frame_no(ohci) + 1;
 		u16	frame = ed->last_iso + ed->interval;
+		u16	length = ed->interval * (size - 1);
 
 		/* Behind the scheduling threshold? */
 		if (unlikely(tick_before(frame, next))) {
 
-			/* USB_ISO_ASAP: Round up to the first available slot */
+			/* URB_ISO_ASAP: Round up to the first available slot */
 			if (urb->transfer_flags & URB_ISO_ASAP) {
 				frame += (next - frame + ed->interval - 1) &
 						-ed->interval;
 
 			/*
-			 * Not ASAP: Use the next slot in the stream.  If
-			 * the entire URB falls before the threshold, fail.
+			 * Not ASAP: Use the next slot in the stream,
+			 * no matter what.
 			 */
 			} else {
-				if (tick_before(frame + ed->interval *
-					(urb->number_of_packets - 1), next)) {
-					retval = -EXDEV;
-					usb_hcd_unlink_urb_from_ep(hcd, urb);
-					goto fail;
-				}
-
 				/*
 				 * Some OHCI hardware doesn't handle late TDs
 				 * correctly.  After retiring them it proceeds
@@ -251,9 +246,16 @@ static int ohci_urb_enqueue (
 				urb_priv->td_cnt = DIV_ROUND_UP(
 						(u16) (next - frame),
 						ed->interval);
+				if (urb_priv->td_cnt >= urb_priv->length) {
+					++urb_priv->td_cnt;	/* Mark it */
+					ohci_dbg(ohci, "iso underrun %p (%u+%u < %u)\n",
+							urb, frame, length,
+							next);
+				}
 			}
 		}
 		urb->start_frame = frame;
+		ed->last_iso = frame + length;
 	}
 
 	/* fill the TDs and link them to the ed; and
@@ -752,7 +754,7 @@ retry:
 		ohci->ed_to_check = NULL;
 	}
 
-	ohci_dump (ohci, 1);
+	ohci_dump(ohci);
 
 	return 0;
 }
@@ -833,7 +835,7 @@ static irqreturn_t ohci_irq (struct usb_hcd *hcd)
 			usb_hc_died(hcd);
 		}
 
-		ohci_dump (ohci, 1);
+		ohci_dump(ohci);
 		ohci_usb_reset (ohci);
 	}
 
@@ -933,7 +935,7 @@ static void ohci_stop (struct usb_hcd *hcd)
 {
 	struct ohci_hcd		*ohci = hcd_to_ohci (hcd);
 
-	ohci_dump (ohci, 1);
+	ohci_dump(ohci);
 
 	if (quirk_nec(ohci))
 		flush_work(&ohci->nec_work);

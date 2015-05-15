@@ -464,6 +464,13 @@ static bool radeon_atom_apply_quirks(struct drm_device *dev,
 		}
 	}
 
+	/* Fujitsu D3003-S2 board lists DVI-I as DVI-I and VGA */
+	if ((dev->pdev->device == 0x9805) &&
+	    (dev->pdev->subsystem_vendor == 0x1734) &&
+	    (dev->pdev->subsystem_device == 0x11bd)) {
+		if (*connector_type == DRM_MODE_CONNECTOR_VGA)
+			return false;
+	}
 
 	return true;
 }
@@ -1367,6 +1374,7 @@ bool radeon_atombios_get_ppll_ss_info(struct radeon_device *rdev,
 	int index = GetIndexIntoMasterTable(DATA, PPLL_SS_Info);
 	uint16_t data_offset, size;
 	struct _ATOM_SPREAD_SPECTRUM_INFO *ss_info;
+	struct _ATOM_SPREAD_SPECTRUM_ASSIGNMENT *ss_assign;
 	uint8_t frev, crev;
 	int i, num_indices;
 
@@ -1378,18 +1386,21 @@ bool radeon_atombios_get_ppll_ss_info(struct radeon_device *rdev,
 
 		num_indices = (size - sizeof(ATOM_COMMON_TABLE_HEADER)) /
 			sizeof(ATOM_SPREAD_SPECTRUM_ASSIGNMENT);
-
+		ss_assign = (struct _ATOM_SPREAD_SPECTRUM_ASSIGNMENT*)
+			((u8 *)&ss_info->asSS_Info[0]);
 		for (i = 0; i < num_indices; i++) {
-			if (ss_info->asSS_Info[i].ucSS_Id == id) {
+			if (ss_assign->ucSS_Id == id) {
 				ss->percentage =
-					le16_to_cpu(ss_info->asSS_Info[i].usSpreadSpectrumPercentage);
-				ss->type = ss_info->asSS_Info[i].ucSpreadSpectrumType;
-				ss->step = ss_info->asSS_Info[i].ucSS_Step;
-				ss->delay = ss_info->asSS_Info[i].ucSS_Delay;
-				ss->range = ss_info->asSS_Info[i].ucSS_Range;
-				ss->refdiv = ss_info->asSS_Info[i].ucRecommendedRef_Div;
+					le16_to_cpu(ss_assign->usSpreadSpectrumPercentage);
+				ss->type = ss_assign->ucSpreadSpectrumType;
+				ss->step = ss_assign->ucSS_Step;
+				ss->delay = ss_assign->ucSS_Delay;
+				ss->range = ss_assign->ucSS_Range;
+				ss->refdiv = ss_assign->ucRecommendedRef_Div;
 				return true;
 			}
+			ss_assign = (struct _ATOM_SPREAD_SPECTRUM_ASSIGNMENT*)
+				((u8 *)ss_assign + sizeof(struct _ATOM_SPREAD_SPECTRUM_ASSIGNMENT));
 		}
 	}
 	return false;
@@ -1477,6 +1488,12 @@ union asic_ss_info {
 	struct _ATOM_ASIC_INTERNAL_SS_INFO_V3 info_3;
 };
 
+union asic_ss_assignment {
+	struct _ATOM_ASIC_SS_ASSIGNMENT v1;
+	struct _ATOM_ASIC_SS_ASSIGNMENT_V2 v2;
+	struct _ATOM_ASIC_SS_ASSIGNMENT_V3 v3;
+};
+
 bool radeon_atombios_get_asic_ss_info(struct radeon_device *rdev,
 				      struct radeon_atom_ss *ss,
 				      int id, u32 clock)
@@ -1485,6 +1502,7 @@ bool radeon_atombios_get_asic_ss_info(struct radeon_device *rdev,
 	int index = GetIndexIntoMasterTable(DATA, ASIC_InternalSS_Info);
 	uint16_t data_offset, size;
 	union asic_ss_info *ss_info;
+	union asic_ss_assignment *ss_assign;
 	uint8_t frev, crev;
 	int i, num_indices;
 
@@ -1509,45 +1527,52 @@ bool radeon_atombios_get_asic_ss_info(struct radeon_device *rdev,
 			num_indices = (size - sizeof(ATOM_COMMON_TABLE_HEADER)) /
 				sizeof(ATOM_ASIC_SS_ASSIGNMENT);
 
+			ss_assign = (union asic_ss_assignment *)((u8 *)&ss_info->info.asSpreadSpectrum[0]);
 			for (i = 0; i < num_indices; i++) {
-				if ((ss_info->info.asSpreadSpectrum[i].ucClockIndication == id) &&
-				    (clock <= le32_to_cpu(ss_info->info.asSpreadSpectrum[i].ulTargetClockRange))) {
+				if ((ss_assign->v1.ucClockIndication == id) &&
+				    (clock <= le32_to_cpu(ss_assign->v1.ulTargetClockRange))) {
 					ss->percentage =
-						le16_to_cpu(ss_info->info.asSpreadSpectrum[i].usSpreadSpectrumPercentage);
-					ss->type = ss_info->info.asSpreadSpectrum[i].ucSpreadSpectrumMode;
-					ss->rate = le16_to_cpu(ss_info->info.asSpreadSpectrum[i].usSpreadRateInKhz);
+						le16_to_cpu(ss_assign->v1.usSpreadSpectrumPercentage);
+					ss->type = ss_assign->v1.ucSpreadSpectrumMode;
+					ss->rate = le16_to_cpu(ss_assign->v1.usSpreadRateInKhz);
 					return true;
 				}
+				ss_assign = (union asic_ss_assignment *)
+					((u8 *)ss_assign + sizeof(ATOM_ASIC_SS_ASSIGNMENT));
 			}
 			break;
 		case 2:
 			num_indices = (size - sizeof(ATOM_COMMON_TABLE_HEADER)) /
 				sizeof(ATOM_ASIC_SS_ASSIGNMENT_V2);
+			ss_assign = (union asic_ss_assignment *)((u8 *)&ss_info->info_2.asSpreadSpectrum[0]);
 			for (i = 0; i < num_indices; i++) {
-				if ((ss_info->info_2.asSpreadSpectrum[i].ucClockIndication == id) &&
-				    (clock <= le32_to_cpu(ss_info->info_2.asSpreadSpectrum[i].ulTargetClockRange))) {
+				if ((ss_assign->v2.ucClockIndication == id) &&
+				    (clock <= le32_to_cpu(ss_assign->v2.ulTargetClockRange))) {
 					ss->percentage =
-						le16_to_cpu(ss_info->info_2.asSpreadSpectrum[i].usSpreadSpectrumPercentage);
-					ss->type = ss_info->info_2.asSpreadSpectrum[i].ucSpreadSpectrumMode;
-					ss->rate = le16_to_cpu(ss_info->info_2.asSpreadSpectrum[i].usSpreadRateIn10Hz);
+						le16_to_cpu(ss_assign->v2.usSpreadSpectrumPercentage);
+					ss->type = ss_assign->v2.ucSpreadSpectrumMode;
+					ss->rate = le16_to_cpu(ss_assign->v2.usSpreadRateIn10Hz);
 					if ((crev == 2) &&
 					    ((id == ASIC_INTERNAL_ENGINE_SS) ||
 					     (id == ASIC_INTERNAL_MEMORY_SS)))
 						ss->rate /= 100;
 					return true;
 				}
+				ss_assign = (union asic_ss_assignment *)
+					((u8 *)ss_assign + sizeof(ATOM_ASIC_SS_ASSIGNMENT_V2));
 			}
 			break;
 		case 3:
 			num_indices = (size - sizeof(ATOM_COMMON_TABLE_HEADER)) /
 				sizeof(ATOM_ASIC_SS_ASSIGNMENT_V3);
+			ss_assign = (union asic_ss_assignment *)((u8 *)&ss_info->info_3.asSpreadSpectrum[0]);
 			for (i = 0; i < num_indices; i++) {
-				if ((ss_info->info_3.asSpreadSpectrum[i].ucClockIndication == id) &&
-				    (clock <= le32_to_cpu(ss_info->info_3.asSpreadSpectrum[i].ulTargetClockRange))) {
+				if ((ss_assign->v3.ucClockIndication == id) &&
+				    (clock <= le32_to_cpu(ss_assign->v3.ulTargetClockRange))) {
 					ss->percentage =
-						le16_to_cpu(ss_info->info_3.asSpreadSpectrum[i].usSpreadSpectrumPercentage);
-					ss->type = ss_info->info_3.asSpreadSpectrum[i].ucSpreadSpectrumMode;
-					ss->rate = le16_to_cpu(ss_info->info_3.asSpreadSpectrum[i].usSpreadRateIn10Hz);
+						le16_to_cpu(ss_assign->v3.usSpreadSpectrumPercentage);
+					ss->type = ss_assign->v3.ucSpreadSpectrumMode;
+					ss->rate = le16_to_cpu(ss_assign->v3.usSpreadRateIn10Hz);
 					if ((id == ASIC_INTERNAL_ENGINE_SS) ||
 					    (id == ASIC_INTERNAL_MEMORY_SS))
 						ss->rate /= 100;
@@ -1555,6 +1580,8 @@ bool radeon_atombios_get_asic_ss_info(struct radeon_device *rdev,
 						radeon_atombios_get_igp_ss_overrides(rdev, ss, id);
 					return true;
 				}
+				ss_assign = (union asic_ss_assignment *)
+					((u8 *)ss_assign + sizeof(ATOM_ASIC_SS_ASSIGNMENT_V3));
 			}
 			break;
 		default:
@@ -1943,7 +1970,7 @@ static const char *thermal_controller_names[] = {
 	"adm1032",
 	"adm1030",
 	"max6649",
-	"lm64",
+	"lm63", /* lm64 */
 	"f75375",
 	"asc7xxx",
 };
@@ -1954,7 +1981,7 @@ static const char *pp_lib_thermal_controller_names[] = {
 	"adm1032",
 	"adm1030",
 	"max6649",
-	"lm64",
+	"lm63", /* lm64 */
 	"f75375",
 	"RV6xx",
 	"RV770",
@@ -2261,19 +2288,31 @@ static void radeon_atombios_add_pplib_thermal_controller(struct radeon_device *r
 				 (controller->ucFanParameters &
 				  ATOM_PP_FANPARAMETERS_NOFAN) ? "without" : "with");
 			rdev->pm.int_thermal_type = THERMAL_TYPE_KV;
-		} else if ((controller->ucType ==
-			    ATOM_PP_THERMALCONTROLLER_EXTERNAL_GPIO) ||
-			   (controller->ucType ==
-			    ATOM_PP_THERMALCONTROLLER_ADT7473_WITH_INTERNAL) ||
-			   (controller->ucType ==
-			    ATOM_PP_THERMALCONTROLLER_EMC2103_WITH_INTERNAL)) {
-			DRM_INFO("Special thermal controller config\n");
+		} else if (controller->ucType ==
+			   ATOM_PP_THERMALCONTROLLER_EXTERNAL_GPIO) {
+			DRM_INFO("External GPIO thermal controller %s fan control\n",
+				 (controller->ucFanParameters &
+				  ATOM_PP_FANPARAMETERS_NOFAN) ? "without" : "with");
+			rdev->pm.int_thermal_type = THERMAL_TYPE_EXTERNAL_GPIO;
+		} else if (controller->ucType ==
+			   ATOM_PP_THERMALCONTROLLER_ADT7473_WITH_INTERNAL) {
+			DRM_INFO("ADT7473 with internal thermal controller %s fan control\n",
+				 (controller->ucFanParameters &
+				  ATOM_PP_FANPARAMETERS_NOFAN) ? "without" : "with");
+			rdev->pm.int_thermal_type = THERMAL_TYPE_ADT7473_WITH_INTERNAL;
+		} else if (controller->ucType ==
+			   ATOM_PP_THERMALCONTROLLER_EMC2103_WITH_INTERNAL) {
+			DRM_INFO("EMC2103 with internal thermal controller %s fan control\n",
+				 (controller->ucFanParameters &
+				  ATOM_PP_FANPARAMETERS_NOFAN) ? "without" : "with");
+			rdev->pm.int_thermal_type = THERMAL_TYPE_EMC2103_WITH_INTERNAL;
 		} else if (controller->ucType < ARRAY_SIZE(pp_lib_thermal_controller_names)) {
 			DRM_INFO("Possible %s thermal controller at 0x%02x %s fan control\n",
 				 pp_lib_thermal_controller_names[controller->ucType],
 				 controller->ucI2cAddress >> 1,
 				 (controller->ucFanParameters &
 				  ATOM_PP_FANPARAMETERS_NOFAN) ? "without" : "with");
+			rdev->pm.int_thermal_type = THERMAL_TYPE_EXTERNAL;
 			i2c_bus = radeon_lookup_i2c_gpio(rdev, controller->ucI2cLine);
 			rdev->pm.i2c_bus = radeon_i2c_lookup(rdev, &i2c_bus);
 			if (rdev->pm.i2c_bus) {
@@ -2898,7 +2937,7 @@ int radeon_atom_get_memory_pll_dividers(struct radeon_device *rdev,
 			mpll_param->dll_speed = args.ucDllSpeed;
 			mpll_param->bwcntl = args.ucBWCntl;
 			mpll_param->vco_mode =
-				(args.ucPllCntlFlag & MPLL_CNTL_FLAG_VCO_MODE_MASK) ? 1 : 0;
+				(args.ucPllCntlFlag & MPLL_CNTL_FLAG_VCO_MODE_MASK);
 			mpll_param->yclk_sel =
 				(args.ucPllCntlFlag & MPLL_CNTL_FLAG_BYPASS_DQ_PLL) ? 1 : 0;
 			mpll_param->qdr =
@@ -3923,6 +3962,10 @@ void radeon_atom_initialize_bios_scratch_regs(struct drm_device *dev)
 
 	/* tell the bios not to handle mode switching */
 	bios_6_scratch |= ATOM_S6_ACC_BLOCK_DISPLAY_SWITCH;
+
+	/* clear the vbios dpms state */
+	if (ASIC_IS_DCE4(rdev))
+		bios_2_scratch &= ~ATOM_S2_DEVICE_DPMS_STATE;
 
 	if (rdev->family >= CHIP_R600) {
 		WREG32(R600_BIOS_2_SCRATCH, bios_2_scratch);

@@ -83,6 +83,14 @@ void i915_update_dri1_breadcrumb(struct drm_device *dev)
 	drm_i915_private_t *dev_priv = dev->dev_private;
 	struct drm_i915_master_private *master_priv;
 
+	/*
+	 * The dri breadcrumb update races against the drm master disappearing.
+	 * Instead of trying to fix this (this is by far not the only ums issue)
+	 * just don't do the update in kms mode.
+	 */
+	if (drm_core_check_feature(dev, DRIVER_MODESET))
+		return;
+
 	if (dev->primary->master) {
 		master_priv = dev->primary->master->driver_priv;
 		if (master_priv->sarea_priv)
@@ -1290,12 +1298,9 @@ static int i915_load_modeset_init(struct drm_device *dev)
 	 * then we do not take part in VGA arbitration and the
 	 * vga_client_register() fails with -ENODEV.
 	 */
-	if (!HAS_PCH_SPLIT(dev)) {
-		ret = vga_client_register(dev->pdev, dev, NULL,
-					  i915_vga_set_decode);
-		if (ret && ret != -ENODEV)
-			goto out;
-	}
+	ret = vga_client_register(dev->pdev, dev, NULL, i915_vga_set_decode);
+	if (ret && ret != -ENODEV)
+		goto out;
 
 	intel_register_dsm_handler();
 
@@ -1350,12 +1355,6 @@ static int i915_load_modeset_init(struct drm_device *dev)
 	 * tiny window where we will loose hotplug notifactions.
 	 */
 	intel_fbdev_initial_config(dev);
-
-	/*
-	 * Must do this after fbcon init so that
-	 * vgacon_save_screen() works during the handover.
-	 */
-	i915_disable_vga_mem(dev);
 
 	/* Only enable hotplug handling once the fbdev is fully set up. */
 	dev_priv->enable_hotplug_processing = true;
@@ -1684,6 +1683,7 @@ out_gem_unload:
 
 	intel_teardown_gmbus(dev);
 	intel_teardown_mchbar(dev);
+	pm_qos_remove_request(&dev_priv->pm_qos);
 	destroy_workqueue(dev_priv->wq);
 out_mtrrfree:
 	arch_phys_wc_del(dev_priv->gtt.mtrr);
@@ -1857,8 +1857,10 @@ void i915_driver_lastclose(struct drm_device * dev)
 
 void i915_driver_preclose(struct drm_device * dev, struct drm_file *file_priv)
 {
+	mutex_lock(&dev->struct_mutex);
 	i915_gem_context_close(dev, file_priv);
 	i915_gem_release(dev, file_priv);
+	mutex_unlock(&dev->struct_mutex);
 }
 
 void i915_driver_postclose(struct drm_device *dev, struct drm_file *file)

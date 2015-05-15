@@ -132,6 +132,10 @@
 	orrne	r5, V7M_xPSR_FRAMEPTRALIGN
 	biceq	r5, V7M_xPSR_FRAMEPTRALIGN
 
+	@ ensure bit 0 is cleared in the PC, otherwise behaviour is
+	@ unpredictable
+	bic	r4, #1
+
 	@ write basic exception frame
 	stmdb	r2!, {r1, r3-r5}
 	ldmia	sp, {r1, r3-r5}
@@ -329,10 +333,10 @@
 #ifdef CONFIG_CONTEXT_TRACKING
 	.if	\save
 	stmdb   sp!, {r0-r3, ip, lr}
-	bl	user_exit
+	bl	context_tracking_user_exit
 	ldmia	sp!, {r0-r3, ip, lr}
 	.else
-	bl	user_exit
+	bl	context_tracking_user_exit
 	.endif
 #endif
 	.endm
@@ -341,10 +345,10 @@
 #ifdef CONFIG_CONTEXT_TRACKING
 	.if	\save
 	stmdb   sp!, {r0-r3, ip, lr}
-	bl	user_enter
+	bl	context_tracking_user_enter
 	ldmia	sp!, {r0-r3, ip, lr}
 	.else
-	bl	user_enter
+	bl	context_tracking_user_enter
 	.endif
 #endif
 	.endm

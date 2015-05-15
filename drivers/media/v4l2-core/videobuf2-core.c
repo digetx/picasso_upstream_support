@@ -353,7 +353,9 @@ static int __verify_length(struct vb2_buffer *vb, const struct v4l2_buffer *b)
 
 			if (b->m.planes[plane].bytesused > length)
 				return -EINVAL;
-			if (b->m.planes[plane].data_offset >=
+
+			if (b->m.planes[plane].data_offset > 0 &&
+			    b->m.planes[plane].data_offset >=
 			    b->m.planes[plane].bytesused)
 				return -EINVAL;
 		}
@@ -701,6 +703,7 @@ static int __reqbufs(struct vb2_queue *q, struct v4l2_requestbuffers *req)
 	 * to the userspace.
 	 */
 	req->count = allocated_buffers;
+	q->waiting_for_buffers = !V4L2_TYPE_IS_OUTPUT(q->type);
 
 	return 0;
 }
@@ -749,6 +752,7 @@ static int __create_bufs(struct vb2_queue *q, struct v4l2_create_buffers *create
 		memset(q->plane_sizes, 0, sizeof(q->plane_sizes));
 		memset(q->alloc_ctx, 0, sizeof(q->alloc_ctx));
 		q->memory = create->memory;
+		q->waiting_for_buffers = !V4L2_TYPE_IS_OUTPUT(q->type);
 	}
 
 	num_buffers = min(create->count, VIDEO_MAX_FRAME - q->num_buffers);
@@ -1369,6 +1373,7 @@ static int __vb2_qbuf(struct vb2_queue *q, struct v4l2_buffer *b,
 	 * dequeued in dqbuf.
 	 */
 	list_add_tail(&vb->queued_entry, &q->queued_list);
+	q->waiting_for_buffers = false;
 	vb->state = VB2_BUF_STATE_QUEUED;
 
 	/*
@@ -1753,6 +1758,7 @@ int vb2_streamoff(struct vb2_queue *q, enum v4l2_buf_type type)
 	 * and videobuf, effectively returning control over them to userspace.
 	 */
 	__vb2_queue_cancel(q);
+	q->waiting_for_buffers = !V4L2_TYPE_IS_OUTPUT(q->type);
 
 	dprintk(3, "Streamoff successful\n");
 	return 0;
@@ -2038,9 +2044,16 @@ unsigned int vb2_poll(struct vb2_queue *q, struct file *file, poll_table *wait)
 	}
 
 	/*
-	 * There is nothing to wait for if no buffers have already been queued.
+	 * There is nothing to wait for if the queue isn't streaming.
 	 */
-	if (list_empty(&q->queued_list))
+	if (!vb2_is_streaming(q))
+		return res | POLLERR;
+	/*
+	 * For compatibility with vb1: if QBUF hasn't been called yet, then
+	 * return POLLERR as well. This only affects capture queues, output
+	 * queues will always initialize waiting_for_buffers to false.
+	 */
+	if (q->waiting_for_buffers)
 		return res | POLLERR;
 
 	if (list_empty(&q->done_list))

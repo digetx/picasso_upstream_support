@@ -1386,20 +1386,20 @@ unlock:
 out:
 	switch (ret) {
 	case -EIO:
-		/* If this -EIO is due to a gpu hang, give the reset code a
-		 * chance to clean up the mess. Otherwise return the proper
-		 * SIGBUS. */
-		if (i915_terminally_wedged(&dev_priv->gpu_error))
+		/*
+		 * We eat errors when the gpu is terminally wedged to avoid
+		 * userspace unduly crashing (gl has no provisions for mmaps to
+		 * fail). But any other -EIO isn't ours (e.g. swap in failure)
+		 * and so needs to be reported.
+		 */
+		if (!i915_terminally_wedged(&dev_priv->gpu_error))
 			return VM_FAULT_SIGBUS;
 	case -EAGAIN:
-		/* Give the error handler a chance to run and move the
-		 * objects off the GPU active list. Next time we service the
-		 * fault, we should be able to transition the page into the
-		 * GTT without touching the GPU (and so avoid further
-		 * EIO/EGAIN). If the GPU is wedged, then there is no issue
-		 * with coherency, just lost writes.
+		/*
+		 * EAGAIN means the gpu is hung and we'll wait for the error
+		 * handler to reset everything when re-faulting in
+		 * i915_mutex_lock_interruptible.
 		 */
-		set_need_resched();
 	case 0:
 	case -ERESTARTSYS:
 	case -EINTR:
@@ -2281,24 +2281,30 @@ static void i915_gem_free_request(struct drm_i915_gem_request *request)
 	kfree(request);
 }
 
-static void i915_gem_reset_ring_lists(struct drm_i915_private *dev_priv,
-				      struct intel_ring_buffer *ring)
+static void i915_gem_reset_ring_status(struct drm_i915_private *dev_priv,
+				       struct intel_ring_buffer *ring)
 {
-	u32 completed_seqno;
-	u32 acthd;
+	u32 completed_seqno = ring->get_seqno(ring, false);
+	u32 acthd = intel_ring_get_active_head(ring);
+	struct drm_i915_gem_request *request;
 
-	acthd = intel_ring_get_active_head(ring);
-	completed_seqno = ring->get_seqno(ring, false);
+	list_for_each_entry(request, &ring->request_list, list) {
+		if (i915_seqno_passed(completed_seqno, request->seqno))
+			continue;
 
+		i915_set_reset_status(ring, request, acthd);
+	}
+}
+
+static void i915_gem_reset_ring_cleanup(struct drm_i915_private *dev_priv,
+					struct intel_ring_buffer *ring)
+{
 	while (!list_empty(&ring->request_list)) {
 		struct drm_i915_gem_request *request;
 
 		request = list_first_entry(&ring->request_list,
 					   struct drm_i915_gem_request,
 					   list);
-
-		if (request->seqno > completed_seqno)
-			i915_set_reset_status(ring, request, acthd);
 
 		i915_gem_free_request(request);
 	}
@@ -2341,8 +2347,16 @@ void i915_gem_reset(struct drm_device *dev)
 	struct intel_ring_buffer *ring;
 	int i;
 
+	/*
+	 * Before we free the objects from the requests, we need to inspect
+	 * them for finding the guilty party. As the requests only borrow
+	 * their reference to the objects, the inspection must be done first.
+	 */
 	for_each_ring(ring, dev_priv, i)
-		i915_gem_reset_ring_lists(dev_priv, ring);
+		i915_gem_reset_ring_status(dev_priv, ring);
+
+	for_each_ring(ring, dev_priv, i)
+		i915_gem_reset_ring_cleanup(dev_priv, ring);
 
 	i915_gem_restore_fences(dev);
 }
@@ -2773,6 +2787,13 @@ static void i965_write_fence_reg(struct drm_device *dev, int reg,
 	if (obj) {
 		u32 size = i915_gem_obj_ggtt_size(obj);
 		uint64_t val;
+
+		/* Adjust fence size to match tiled area */
+		if (obj->tiling_mode != I915_TILING_NONE) {
+			uint32_t row_size = obj->stride *
+				(obj->tiling_mode == I915_TILING_Y ? 32 : 8);
+			size = (size / row_size) * row_size;
+		}
 
 		val = (uint64_t)((i915_gem_obj_ggtt_offset(obj) + size - 4096) &
 				 0xfffff000) << 32;
@@ -3408,7 +3429,7 @@ int i915_gem_object_set_cache_level(struct drm_i915_gem_object *obj,
 {
 	struct drm_device *dev = obj->base.dev;
 	drm_i915_private_t *dev_priv = dev->dev_private;
-	struct i915_vma *vma;
+	struct i915_vma *vma, *next;
 	int ret;
 
 	if (obj->cache_level == cache_level)
@@ -3419,7 +3440,7 @@ int i915_gem_object_set_cache_level(struct drm_i915_gem_object *obj,
 		return -EBUSY;
 	}
 
-	list_for_each_entry(vma, &obj->vma_list, vma_link) {
+	list_for_each_entry_safe(vma, next, &obj->vma_list, vma_link) {
 		if (!i915_gem_valid_gtt_space(dev, &vma->node, cache_level)) {
 			ret = i915_vma_unbind(vma);
 			if (ret)
@@ -4781,7 +4802,7 @@ static bool mutex_is_locked_by(struct mutex *mutex, struct task_struct *task)
 	if (!mutex_is_locked(mutex))
 		return false;
 
-#if defined(CONFIG_SMP) || defined(CONFIG_DEBUG_MUTEXES)
+#if defined(CONFIG_SMP) && !defined(CONFIG_DEBUG_MUTEXES)
 	return mutex->owner == task;
 #else
 	/* Since UP may be pre-empted, we cannot assume that we own the lock */
@@ -4803,10 +4824,10 @@ i915_gem_inactive_count(struct shrinker *shrinker, struct shrink_control *sc)
 
 	if (!mutex_trylock(&dev->struct_mutex)) {
 		if (!mutex_is_locked_by(&dev->struct_mutex, current))
-			return SHRINK_STOP;
+			return 0;
 
 		if (dev_priv->mm.shrinker_no_lock_stealing)
-			return SHRINK_STOP;
+			return 0;
 
 		unlock = false;
 	}
@@ -4904,10 +4925,10 @@ i915_gem_inactive_scan(struct shrinker *shrinker, struct shrink_control *sc)
 
 	if (!mutex_trylock(&dev->struct_mutex)) {
 		if (!mutex_is_locked_by(&dev->struct_mutex, current))
-			return 0;
+			return SHRINK_STOP;
 
 		if (dev_priv->mm.shrinker_no_lock_stealing)
-			return 0;
+			return SHRINK_STOP;
 
 		unlock = false;
 	}

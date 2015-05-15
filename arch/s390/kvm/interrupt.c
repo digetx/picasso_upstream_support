@@ -71,6 +71,7 @@ static int __interrupt_is_deliverable(struct kvm_vcpu *vcpu,
 			return 0;
 		if (vcpu->arch.sie_block->gcr[0] & 0x2000ul)
 			return 1;
+		return 0;
 	case KVM_S390_INT_EMERGENCY:
 		if (psw_extint_disabled(vcpu))
 			return 0;
@@ -385,7 +386,7 @@ static int kvm_cpu_has_interrupt(struct kvm_vcpu *vcpu)
 	}
 
 	if ((!rc) && (vcpu->arch.sie_block->ckc <
-		get_tod_clock() + vcpu->arch.sie_block->epoch)) {
+		get_tod_clock_fast() + vcpu->arch.sie_block->epoch)) {
 		if ((!psw_extint_disabled(vcpu)) &&
 			(vcpu->arch.sie_block->gcr[0] & 0x800ul))
 			rc = 1;
@@ -425,7 +426,7 @@ int kvm_s390_handle_wait(struct kvm_vcpu *vcpu)
 		goto no_timer;
 	}
 
-	now = get_tod_clock() + vcpu->arch.sie_block->epoch;
+	now = get_tod_clock_fast() + vcpu->arch.sie_block->epoch;
 	if (vcpu->arch.sie_block->ckc < now) {
 		__unset_cpu_idle(vcpu);
 		return 0;
@@ -515,7 +516,7 @@ void kvm_s390_deliver_pending_interrupts(struct kvm_vcpu *vcpu)
 	}
 
 	if ((vcpu->arch.sie_block->ckc <
-		get_tod_clock() + vcpu->arch.sie_block->epoch))
+		get_tod_clock_fast() + vcpu->arch.sie_block->epoch))
 		__try_deliver_ckc_interrupt(vcpu);
 
 	if (atomic_read(&fi->active)) {

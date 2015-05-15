@@ -386,6 +386,18 @@ enum {
 	EF10_STAT_rx_align_error,
 	EF10_STAT_rx_length_error,
 	EF10_STAT_rx_nodesc_drops,
+	EF10_STAT_rx_pm_trunc_bb_overflow,
+	EF10_STAT_rx_pm_discard_bb_overflow,
+	EF10_STAT_rx_pm_trunc_vfifo_full,
+	EF10_STAT_rx_pm_discard_vfifo_full,
+	EF10_STAT_rx_pm_trunc_qbb,
+	EF10_STAT_rx_pm_discard_qbb,
+	EF10_STAT_rx_pm_discard_mapping,
+	EF10_STAT_rx_dp_q_disabled_packets,
+	EF10_STAT_rx_dp_di_dropped_packets,
+	EF10_STAT_rx_dp_streaming_packets,
+	EF10_STAT_rx_dp_emerg_fetch,
+	EF10_STAT_rx_dp_emerg_wait,
 	EF10_STAT_COUNT
 };
 
@@ -400,6 +412,8 @@ enum {
  * @rx_rss_context: Firmware handle for our RSS context
  * @stats: Hardware statistics
  * @workaround_35388: Flag: firmware supports workaround for bug 35388
+ * @must_check_datapath_caps: Flag: @datapath_caps needs to be revalidated
+ *	after MC reboot
  * @datapath_caps: Capabilities of datapath firmware (FLAGS1 field of
  *	%MC_CMD_GET_CAPABILITIES response)
  */
@@ -413,6 +427,7 @@ struct efx_ef10_nic_data {
 	u32 rx_rss_context;
 	u64 stats[EF10_STAT_COUNT];
 	bool workaround_35388;
+	bool must_check_datapath_caps;
 	u32 datapath_caps;
 };
 
@@ -513,6 +528,8 @@ extern void efx_ptp_get_ts_info(struct efx_nic *efx,
 extern bool efx_ptp_is_ptp_tx(struct efx_nic *efx, struct sk_buff *skb);
 extern int efx_ptp_tx(struct efx_nic *efx, struct sk_buff *skb);
 extern void efx_ptp_event(struct efx_nic *efx, efx_qword_t *ev);
+void efx_ptp_start_datapath(struct efx_nic *efx);
+void efx_ptp_stop_datapath(struct efx_nic *efx);
 
 extern const struct efx_nic_type falcon_a1_nic_type;
 extern const struct efx_nic_type falcon_b0_nic_type;

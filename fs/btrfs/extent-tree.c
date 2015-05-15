@@ -3318,10 +3318,9 @@ again:
 		last = cache->key.objectid + cache->key.offset;
 
 		err = write_one_cache_group(trans, root, path, cache);
+		btrfs_put_block_group(cache);
 		if (err) /* File system offline */
 			goto out;
-
-		btrfs_put_block_group(cache);
 	}
 
 	while (1) {
@@ -3925,7 +3924,6 @@ static int can_overcommit(struct btrfs_root *root,
 	u64 space_size;
 	u64 avail;
 	u64 used;
-	u64 to_add;
 
 	used = space_info->bytes_used + space_info->bytes_reserved +
 		space_info->bytes_pinned + space_info->bytes_readonly;
@@ -3959,25 +3957,17 @@ static int can_overcommit(struct btrfs_root *root,
 		       BTRFS_BLOCK_GROUP_RAID10))
 		avail >>= 1;
 
-	to_add = space_info->total_bytes;
-
 	/*
 	 * If we aren't flushing all things, let us overcommit up to
 	 * 1/2th of the space. If we can flush, don't let us overcommit
 	 * too much, let it overcommit up to 1/8 of the space.
 	 */
 	if (flush == BTRFS_RESERVE_FLUSH_ALL)
-		to_add >>= 3;
+		avail >>= 3;
 	else
-		to_add >>= 1;
+		avail >>= 1;
 
-	/*
-	 * Limit the overcommit to the amount of free space we could possibly
-	 * allocate for chunks.
-	 */
-	to_add = min(avail, to_add);
-
-	if (used + bytes < space_info->total_bytes + to_add)
+	if (used + bytes < space_info->total_bytes + avail)
 		return 1;
 	return 0;
 }
@@ -4000,7 +3990,7 @@ static void btrfs_writeback_inodes_sb_nr(struct btrfs_root *root,
 		 */
 		btrfs_start_all_delalloc_inodes(root->fs_info, 0);
 		if (!current->journal_info)
-			btrfs_wait_all_ordered_extents(root->fs_info, 0);
+			btrfs_wait_all_ordered_extents(root->fs_info);
 	}
 }
 
@@ -4030,7 +4020,7 @@ static void shrink_delalloc(struct btrfs_root *root, u64 to_reclaim, u64 orig,
 	if (delalloc_bytes == 0) {
 		if (trans)
 			return;
-		btrfs_wait_all_ordered_extents(root->fs_info, 0);
+		btrfs_wait_all_ordered_extents(root->fs_info);
 		return;
 	}
 
@@ -4058,7 +4048,7 @@ static void shrink_delalloc(struct btrfs_root *root, u64 to_reclaim, u64 orig,
 
 		loops++;
 		if (wait_ordered && !trans) {
-			btrfs_wait_all_ordered_extents(root->fs_info, 0);
+			btrfs_wait_all_ordered_extents(root->fs_info);
 		} else {
 			time_left = schedule_timeout_killable(1);
 			if (time_left)
@@ -4465,7 +4455,6 @@ static void block_rsv_release_bytes(struct btrfs_fs_info *fs_info,
 			space_info->bytes_may_use -= num_bytes;
 			trace_btrfs_space_reservation(fs_info, "space_info",
 					space_info->flags, num_bytes, 0);
-			space_info->reservation_progress++;
 			spin_unlock(&space_info->lock);
 		}
 	}
@@ -4666,7 +4655,6 @@ static void update_global_block_rsv(struct btrfs_fs_info *fs_info)
 		sinfo->bytes_may_use -= num_bytes;
 		trace_btrfs_space_reservation(fs_info, "space_info",
 				      sinfo->flags, num_bytes, 0);
-		sinfo->reservation_progress++;
 		block_rsv->reserved = block_rsv->size;
 		block_rsv->full = 1;
 	}
@@ -5446,7 +5434,6 @@ static int btrfs_update_reserved_bytes(struct btrfs_block_group_cache *cache,
 			space_info->bytes_readonly += num_bytes;
 		cache->reserved -= num_bytes;
 		space_info->bytes_reserved -= num_bytes;
-		space_info->reservation_progress++;
 	}
 	spin_unlock(&cache->lock);
 	spin_unlock(&space_info->lock);
@@ -5489,7 +5476,8 @@ void btrfs_prepare_extent_commit(struct btrfs_trans_handle *trans,
 	update_global_block_rsv(fs_info);
 }
 
-static int unpin_extent_range(struct btrfs_root *root, u64 start, u64 end)
+static int unpin_extent_range(struct btrfs_root *root, u64 start, u64 end,
+			      const bool return_free_space)
 {
 	struct btrfs_fs_info *fs_info = root->fs_info;
 	struct btrfs_block_group_cache *cache = NULL;
@@ -5513,7 +5501,8 @@ static int unpin_extent_range(struct btrfs_root *root, u64 start, u64 end)
 
 		if (start < cache->last_byte_to_unpin) {
 			len = min(len, cache->last_byte_to_unpin - start);
-			btrfs_add_free_space(cache, start, len);
+			if (return_free_space)
+				btrfs_add_free_space(cache, start, len);
 		}
 
 		start += len;
@@ -5576,7 +5565,7 @@ int btrfs_finish_extent_commit(struct btrfs_trans_handle *trans,
 						   end + 1 - start, NULL);
 
 		clear_extent_dirty(unpin, start, end, GFP_NOFS);
-		unpin_extent_range(root, start, end);
+		unpin_extent_range(root, start, end, true);
 		cond_resched();
 	}
 
@@ -6117,10 +6106,13 @@ enum btrfs_loop_type {
 /*
  * walks the btree of allocated extents and find a hole of a given size.
  * The key ins is changed to record the hole:
- * ins->objectid == block start
+ * ins->objectid == start position
  * ins->flags = BTRFS_EXTENT_ITEM_KEY
- * ins->offset == number of blocks
+ * ins->offset == the size of the hole.
  * Any available blocks before search_start are skipped.
+ *
+ * If there is no suitable free space, we will record the max size of
+ * the free space extent currently.
  */
 static noinline int find_free_extent(struct btrfs_root *orig_root,
 				     u64 num_bytes, u64 empty_size,
@@ -6133,6 +6125,7 @@ static noinline int find_free_extent(struct btrfs_root *orig_root,
 	struct btrfs_block_group_cache *block_group = NULL;
 	struct btrfs_block_group_cache *used_block_group;
 	u64 search_start = 0;
+	u64 max_extent_size = 0;
 	int empty_cluster = 2 * 1024 * 1024;
 	struct btrfs_space_info *space_info;
 	int loop = 0;
@@ -6292,7 +6285,10 @@ have_block_group:
 				btrfs_get_block_group(used_block_group);
 
 			offset = btrfs_alloc_from_cluster(used_block_group,
-			  last_ptr, num_bytes, used_block_group->key.objectid);
+						last_ptr,
+						num_bytes,
+						used_block_group->key.objectid,
+						&max_extent_size);
 			if (offset) {
 				/* we have a block, we're done */
 				spin_unlock(&last_ptr->refill_lock);
@@ -6355,8 +6351,10 @@ refill_cluster:
 				 * cluster
 				 */
 				offset = btrfs_alloc_from_cluster(block_group,
-						  last_ptr, num_bytes,
-						  search_start);
+							last_ptr,
+							num_bytes,
+							search_start,
+							&max_extent_size);
 				if (offset) {
 					/* we found one, proceed */
 					spin_unlock(&last_ptr->refill_lock);
@@ -6391,13 +6389,18 @@ unclustered_alloc:
 		if (cached &&
 		    block_group->free_space_ctl->free_space <
 		    num_bytes + empty_cluster + empty_size) {
+			if (block_group->free_space_ctl->free_space >
+			    max_extent_size)
+				max_extent_size =
+					block_group->free_space_ctl->free_space;
 			spin_unlock(&block_group->free_space_ctl->tree_lock);
 			goto loop;
 		}
 		spin_unlock(&block_group->free_space_ctl->tree_lock);
 
 		offset = btrfs_find_space_for_alloc(block_group, search_start,
-						    num_bytes, empty_size);
+						    num_bytes, empty_size,
+						    &max_extent_size);
 		/*
 		 * If we didn't find a chunk, and we haven't failed on this
 		 * block group before, and this block group is in the middle of
@@ -6515,7 +6518,8 @@ loop:
 		ret = 0;
 	}
 out:
-
+	if (ret == -ENOSPC)
+		ins->offset = max_extent_size;
 	return ret;
 }
 
@@ -6573,8 +6577,8 @@ again:
 			       flags);
 
 	if (ret == -ENOSPC) {
-		if (!final_tried) {
-			num_bytes = num_bytes >> 1;
+		if (!final_tried && ins->offset) {
+			num_bytes = min(num_bytes >> 1, ins->offset);
 			num_bytes = round_down(num_bytes, root->sectorsize);
 			num_bytes = max(num_bytes, min_alloc_size);
 			if (num_bytes == min_alloc_size)
@@ -7715,7 +7719,7 @@ out:
 	 */
 	if (!for_reloc && root_dropped == false)
 		btrfs_add_dead_root(root);
-	if (err)
+	if (err && err != -EAGAIN)
 		btrfs_std_error(root->fs_info, err);
 	return err;
 }
@@ -8807,7 +8811,7 @@ out:
 
 int btrfs_error_unpin_extent_range(struct btrfs_root *root, u64 start, u64 end)
 {
-	return unpin_extent_range(root, start, end);
+	return unpin_extent_range(root, start, end, false);
 }
 
 int btrfs_error_discard_extent(struct btrfs_root *root, u64 bytenr,

@@ -109,7 +109,6 @@ extern int ip_vs_conn_tab_size;
 struct ip_vs_iphdr {
 	__u32 len;	/* IPv4 simply where L4 starts
 			   IPv6 where L4 Transport Header starts */
-	__u32 thoff_reasm; /* Transport Header Offset in nfct_reasm skb */
 	__u16 fragoffs; /* IPv6 fragment offset, 0 if first frag (or not frag)*/
 	__s16 protocol;
 	__s32 flags;
@@ -117,34 +116,12 @@ struct ip_vs_iphdr {
 	union nf_inet_addr daddr;
 };
 
-/* Dependency to module: nf_defrag_ipv6 */
-#if defined(CONFIG_NF_DEFRAG_IPV6) || defined(CONFIG_NF_DEFRAG_IPV6_MODULE)
-static inline struct sk_buff *skb_nfct_reasm(const struct sk_buff *skb)
-{
-	return skb->nfct_reasm;
-}
-static inline void *frag_safe_skb_hp(const struct sk_buff *skb, int offset,
-				      int len, void *buffer,
-				      const struct ip_vs_iphdr *ipvsh)
-{
-	if (unlikely(ipvsh->fragoffs && skb_nfct_reasm(skb)))
-		return skb_header_pointer(skb_nfct_reasm(skb),
-					  ipvsh->thoff_reasm, len, buffer);
-
-	return skb_header_pointer(skb, offset, len, buffer);
-}
-#else
-static inline struct sk_buff *skb_nfct_reasm(const struct sk_buff *skb)
-{
-	return NULL;
-}
 static inline void *frag_safe_skb_hp(const struct sk_buff *skb, int offset,
 				      int len, void *buffer,
 				      const struct ip_vs_iphdr *ipvsh)
 {
 	return skb_header_pointer(skb, offset, len, buffer);
 }
-#endif
 
 static inline void
 ip_vs_fill_ip4hdr(const void *nh, struct ip_vs_iphdr *iphdr)
@@ -171,19 +148,12 @@ ip_vs_fill_iph_skb(int af, const struct sk_buff *skb, struct ip_vs_iphdr *iphdr)
 			(struct ipv6hdr *)skb_network_header(skb);
 		iphdr->saddr.in6 = iph->saddr;
 		iphdr->daddr.in6 = iph->daddr;
-		/* ipv6_find_hdr() updates len, flags, thoff_reasm */
-		iphdr->thoff_reasm = 0;
+		/* ipv6_find_hdr() updates len, flags */
 		iphdr->len	 = 0;
 		iphdr->flags	 = 0;
 		iphdr->protocol  = ipv6_find_hdr(skb, &iphdr->len, -1,
 						 &iphdr->fragoffs,
 						 &iphdr->flags);
-		/* get proto from re-assembled packet and it's offset */
-		if (skb_nfct_reasm(skb))
-			iphdr->protocol = ipv6_find_hdr(skb_nfct_reasm(skb),
-							&iphdr->thoff_reasm,
-							-1, NULL, NULL);
-
 	} else
 #endif
 	{
@@ -723,8 +693,6 @@ struct ip_vs_dest_dst {
 	struct rcu_head		rcu_head;
 };
 
-/* In grace period after removing */
-#define IP_VS_DEST_STATE_REMOVING	0x01
 /*
  *	The real server destination forwarding entry
  *	with ip address, port number, and so on.
@@ -742,7 +710,7 @@ struct ip_vs_dest {
 
 	atomic_t		refcnt;		/* reference counter */
 	struct ip_vs_stats      stats;          /* statistics */
-	unsigned long		state;		/* state flags */
+	unsigned long		idle_start;	/* start time, jiffies */
 
 	/* connection counters and thresholds */
 	atomic_t		activeconns;	/* active connections */
@@ -756,14 +724,13 @@ struct ip_vs_dest {
 	struct ip_vs_dest_dst __rcu *dest_dst;	/* cached dst info */
 
 	/* for virtual service */
-	struct ip_vs_service	*svc;		/* service it belongs to */
+	struct ip_vs_service __rcu *svc;	/* service it belongs to */
 	__u16			protocol;	/* which protocol (TCP/UDP) */
 	__be16			vport;		/* virtual port number */
 	union nf_inet_addr	vaddr;		/* virtual IP address */
 	__u32			vfwmark;	/* firewall mark of service */
 
 	struct list_head	t_list;		/* in dest_trash */
-	struct rcu_head		rcu_head;
 	unsigned int		in_rs_table:1;	/* we are in rs_table */
 };
 
@@ -1649,7 +1616,7 @@ static inline void ip_vs_conn_drop_conntrack(struct ip_vs_conn *cp)
 /* CONFIG_IP_VS_NFCT */
 #endif
 
-static inline unsigned int
+static inline int
 ip_vs_dest_conn_overhead(struct ip_vs_dest *dest)
 {
 	/*

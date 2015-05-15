@@ -100,6 +100,7 @@ enum acpi_hotplug_mode {
 struct acpi_hotplug_profile {
 	struct kobject kobj;
 	bool enabled:1;
+	bool ignore:1;
 	enum acpi_hotplug_mode mode;
 };
 
@@ -168,7 +169,8 @@ struct acpi_device_flags {
 	u32 ejectable:1;
 	u32 power_manageable:1;
 	u32 match_driver:1;
-	u32 reserved:27;
+	u32 no_hotplug:1;
+	u32 reserved:26;
 };
 
 /* File System */
@@ -311,7 +313,6 @@ struct acpi_device {
 	unsigned int physical_node_count;
 	struct list_head physical_node_list;
 	struct mutex physical_node_lock;
-	struct list_head power_dependent;
 	void (*remove)(struct acpi_device *);
 };
 
@@ -357,6 +358,7 @@ extern struct kobject *acpi_kobj;
 extern int acpi_bus_generate_netlink_event(const char*, const char*, u8, int);
 void acpi_bus_private_data_handler(acpi_handle, void *);
 int acpi_bus_get_private_data(acpi_handle, void **);
+void acpi_bus_no_hotplug(acpi_handle handle);
 extern int acpi_notifier_call_chain(struct acpi_device *, u32, u32);
 extern int register_acpi_notifier(struct notifier_block *);
 extern int unregister_acpi_notifier(struct notifier_block *);
@@ -456,8 +458,6 @@ acpi_status acpi_add_pm_notifier(struct acpi_device *adev,
 acpi_status acpi_remove_pm_notifier(struct acpi_device *adev,
 				    acpi_notify_handler handler);
 int acpi_pm_device_sleep_state(struct device *, int *, int);
-void acpi_dev_pm_add_dependent(acpi_handle handle, struct device *depdev);
-void acpi_dev_pm_remove_dependent(acpi_handle handle, struct device *depdev);
 #else
 static inline acpi_status acpi_add_pm_notifier(struct acpi_device *adev,
 					       acpi_notify_handler handler,
@@ -478,10 +478,6 @@ static inline int acpi_pm_device_sleep_state(struct device *d, int *p, int m)
 	return (m >= ACPI_STATE_D0 && m <= ACPI_STATE_D3_COLD) ?
 		m : ACPI_STATE_D0;
 }
-static inline void acpi_dev_pm_add_dependent(acpi_handle handle,
-					     struct device *depdev) {}
-static inline void acpi_dev_pm_remove_dependent(acpi_handle handle,
-						struct device *depdev) {}
 #endif
 
 #ifdef CONFIG_PM_RUNTIME

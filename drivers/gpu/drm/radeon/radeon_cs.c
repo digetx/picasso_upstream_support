@@ -28,6 +28,7 @@
 #include <drm/radeon_drm.h>
 #include "radeon_reg.h"
 #include "radeon.h"
+#include "radeon_trace.h"
 
 static int radeon_cs_parser_relocs(struct radeon_cs_parser *p)
 {
@@ -80,9 +81,11 @@ static int radeon_cs_parser_relocs(struct radeon_cs_parser *p)
 		p->relocs[i].lobj.bo = p->relocs[i].robj;
 		p->relocs[i].lobj.written = !!r->write_domain;
 
-		/* the first reloc of an UVD job is the
-		   msg and that must be in VRAM */
-		if (p->ring == R600_RING_TYPE_UVD_INDEX && i == 0) {
+		/* the first reloc of an UVD job is the msg and that must be in
+		   VRAM, also but everything into VRAM on AGP cards to avoid
+		   image corruptions */
+		if (p->ring == R600_RING_TYPE_UVD_INDEX &&
+		    (i == 0 || drm_pci_device_is_agp(p->rdev->ddev))) {
 			/* TODO: is this still needed for NI+ ? */
 			p->relocs[i].lobj.domain =
 				RADEON_GEM_DOMAIN_VRAM;
@@ -93,6 +96,12 @@ static int radeon_cs_parser_relocs(struct radeon_cs_parser *p)
 		} else {
 			uint32_t domain = r->write_domain ?
 				r->write_domain : r->read_domains;
+
+			if (domain & RADEON_GEM_DOMAIN_CPU) {
+				DRM_ERROR("RADEON_GEM_DOMAIN_CPU is not valid "
+					  "for command submission\n");
+				return -EINVAL;
+			}
 
 			p->relocs[i].lobj.domain = domain;
 			if (domain == RADEON_GEM_DOMAIN_VRAM)
@@ -169,11 +178,13 @@ int radeon_cs_parser_init(struct radeon_cs_parser *p, void *data)
 	u32 ring = RADEON_CS_RING_GFX;
 	s32 priority = 0;
 
+	INIT_LIST_HEAD(&p->validated);
+
 	if (!cs->num_chunks) {
 		return 0;
 	}
+
 	/* get chunks */
-	INIT_LIST_HEAD(&p->validated);
 	p->idx = 0;
 	p->ib.sa_bo = NULL;
 	p->ib.semaphore = NULL;
@@ -268,10 +279,17 @@ int radeon_cs_parser_init(struct radeon_cs_parser *p, void *data)
 			return -EINVAL;
 
 		/* we only support VM on some SI+ rings */
-		if ((p->rdev->asic->ring[p->ring]->cs_parse == NULL) &&
-		   ((p->cs_flags & RADEON_CS_USE_VM) == 0)) {
-			DRM_ERROR("Ring %d requires VM!\n", p->ring);
-			return -EINVAL;
+		if ((p->cs_flags & RADEON_CS_USE_VM) == 0) {
+			if (p->rdev->asic->ring[p->ring]->cs_parse == NULL) {
+				DRM_ERROR("Ring %d requires VM!\n", p->ring);
+				return -EINVAL;
+			}
+		} else {
+			if (p->rdev->asic->ring[p->ring]->ib_parse == NULL) {
+				DRM_ERROR("VM not supported on ring %d!\n",
+					  p->ring);
+				return -EINVAL;
+			}
 		}
 	}
 
@@ -558,6 +576,8 @@ int radeon_cs_ioctl(struct drm_device *dev, void *data, struct drm_file *filp)
 		r = radeon_cs_handle_lockup(rdev, r);
 		return r;
 	}
+
+	trace_radeon_cs(&parser);
 
 	r = radeon_cs_ib_chunk(rdev, &parser);
 	if (r) {

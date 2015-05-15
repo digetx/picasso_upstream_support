@@ -1339,7 +1339,7 @@ static void __maybe_unused gpmc_read_timings_dt(struct device_node *np,
 		of_property_read_bool(np, "gpmc,time-para-granularity");
 }
 
-#ifdef CONFIG_MTD_NAND
+#if IS_ENABLED(CONFIG_MTD_NAND)
 
 static const char * const nand_ecc_opts[] = {
 	[OMAP_ECC_HAMMING_CODE_DEFAULT]		= "sw",
@@ -1409,7 +1409,7 @@ static int gpmc_probe_nand_child(struct platform_device *pdev,
 }
 #endif
 
-#ifdef CONFIG_MTD_ONENAND
+#if IS_ENABLED(CONFIG_MTD_ONENAND)
 static int gpmc_probe_onenand_child(struct platform_device *pdev,
 				 struct device_node *child)
 {
@@ -1491,8 +1491,8 @@ static int gpmc_probe_generic_child(struct platform_device *pdev,
 	 */
 	ret = gpmc_cs_remap(cs, res.start);
 	if (ret < 0) {
-		dev_err(&pdev->dev, "cannot remap GPMC CS %d to 0x%x\n",
-			cs, res.start);
+		dev_err(&pdev->dev, "cannot remap GPMC CS %d to %pa\n",
+			cs, &res.start);
 		goto err;
 	}
 

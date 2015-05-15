@@ -627,23 +627,12 @@ out:
 static inline int __get_file_write_access(struct inode *inode,
 					  struct vfsmount *mnt)
 {
-	int error;
-	error = get_write_access(inode);
+	int error = get_write_access(inode);
 	if (error)
 		return error;
-	/*
-	 * Do not take mount writer counts on
-	 * special files since no writes to
-	 * the mount itself will occur.
-	 */
-	if (!special_file(inode->i_mode)) {
-		/*
-		 * Balanced in __fput()
-		 */
-		error = __mnt_want_write(mnt);
-		if (error)
-			put_write_access(inode);
-	}
+	error = __mnt_want_write(mnt);
+	if (error)
+		put_write_access(inode);
 	return error;
 }
 
@@ -676,12 +665,11 @@ static int do_dentry_open(struct file *f,
 
 	path_get(&f->f_path);
 	inode = f->f_inode = f->f_path.dentry->d_inode;
-	if (f->f_mode & FMODE_WRITE) {
+	if (f->f_mode & FMODE_WRITE && !special_file(inode->i_mode)) {
 		error = __get_file_write_access(inode, f->f_path.mnt);
 		if (error)
 			goto cleanup_file;
-		if (!special_file(inode->i_mode))
-			file_take_write(f);
+		file_take_write(f);
 	}
 
 	f->f_mapping = inode->i_mapping;
@@ -722,7 +710,6 @@ cleanup_all:
 	fops_put(f->f_op);
 	file_sb_list_del(f);
 	if (f->f_mode & FMODE_WRITE) {
-		put_write_access(inode);
 		if (!special_file(inode->i_mode)) {
 			/*
 			 * We don't consider this a real
@@ -730,6 +717,7 @@ cleanup_all:
 			 * because it all happenend right
 			 * here, so just reset the state.
 			 */
+			put_write_access(inode);
 			file_reset_write(f);
 			__mnt_drop_write(f->f_path.mnt);
 		}
@@ -744,14 +732,24 @@ cleanup_file:
 
 /**
  * finish_open - finish opening a file
- * @od: opaque open data
+ * @file: file pointer
  * @dentry: pointer to dentry
  * @open: open callback
+ * @opened: state of open
  *
  * This can be used to finish opening a file passed to i_op->atomic_open().
  *
  * If the open callback is set to NULL, then the standard f_op->open()
  * filesystem callback is substituted.
+ *
+ * NB: the dentry reference is _not_ consumed.  If, for example, the dentry is
+ * the return value of d_splice_alias(), then the caller needs to perform dput()
+ * on it after finish_open().
+ *
+ * On successful return @file is a fully instantiated open file.  After this, if
+ * an error occurs in ->atomic_open(), it needs to clean up with fput().
+ *
+ * Returns zero on success or -errno if the open failed.
  */
 int finish_open(struct file *file, struct dentry *dentry,
 		int (*open)(struct inode *, struct file *),
@@ -772,11 +770,16 @@ EXPORT_SYMBOL(finish_open);
 /**
  * finish_no_open - finish ->atomic_open() without opening the file
  *
- * @od: opaque open data
+ * @file: file pointer
  * @dentry: dentry or NULL (as returned from ->lookup())
  *
  * This can be used to set the result of a successful lookup in ->atomic_open().
- * The filesystem's atomic_open() method shall return NULL after calling this.
+ *
+ * NB: unlike finish_open() this function does consume the dentry reference and
+ * the caller need not dput() it.
+ *
+ * Returns "1" which must be the return value of ->atomic_open() after having
+ * called this function.
  */
 int finish_no_open(struct file *file, struct dentry *dentry)
 {

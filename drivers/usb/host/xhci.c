@@ -35,6 +35,8 @@
 #define DRIVER_AUTHOR "Sarah Sharp"
 #define DRIVER_DESC "'eXtensible' Host Controller (xHC) Driver"
 
+#define	PORT_WAKE_BITS	(PORT_WKOC_E | PORT_WKDISC_E | PORT_WKCONN_E)
+
 /* Some 0.95 hardware can't handle the chain bit on a Link TRB being cleared */
 static int link_quirk;
 module_param(link_quirk, int, S_IRUGO | S_IWUSR);
@@ -321,6 +323,9 @@ static void xhci_cleanup_msix(struct xhci_hcd *xhci)
 	struct usb_hcd *hcd = xhci_to_hcd(xhci);
 	struct pci_dev *pdev = to_pci_dev(hcd->self.controller);
 
+	if (xhci->quirks & XHCI_PLAT)
+		return;
+
 	xhci_free_irq(xhci);
 
 	if (xhci->msix_entries) {
@@ -397,16 +402,16 @@ static int xhci_try_enable_msi(struct usb_hcd *hcd)
 
 #else
 
-static int xhci_try_enable_msi(struct usb_hcd *hcd)
+static inline int xhci_try_enable_msi(struct usb_hcd *hcd)
 {
 	return 0;
 }
 
-static void xhci_cleanup_msix(struct xhci_hcd *xhci)
+static inline void xhci_cleanup_msix(struct xhci_hcd *xhci)
 {
 }
 
-static void xhci_msix_sync_irqs(struct xhci_hcd *xhci)
+static inline void xhci_msix_sync_irqs(struct xhci_hcd *xhci)
 {
 }
 
@@ -730,6 +735,9 @@ void xhci_shutdown(struct usb_hcd *hcd)
 
 	spin_lock_irq(&xhci->lock);
 	xhci_halt(xhci);
+	/* Workaround for spurious wakeups at shutdown with HSW */
+	if (xhci->quirks & XHCI_SPURIOUS_WAKEUP)
+		xhci_reset(xhci);
 	spin_unlock_irq(&xhci->lock);
 
 	xhci_cleanup_msix(xhci);
@@ -737,6 +745,10 @@ void xhci_shutdown(struct usb_hcd *hcd)
 	xhci_dbg_trace(xhci, trace_xhci_dbg_init,
 			"xhci_shutdown completed - status = %x",
 			xhci_readl(xhci, &xhci->op_regs->status));
+
+	/* Yet another workaround for spurious wakeups at shutdown with HSW */
+	if (xhci->quirks & XHCI_SPURIOUS_WAKEUP)
+		pci_set_power_state(to_pci_dev(hcd->self.controller), PCI_D3hot);
 }
 
 #ifdef CONFIG_PM
@@ -830,21 +842,60 @@ static void xhci_clear_command_ring(struct xhci_hcd *xhci)
 	xhci_set_cmd_ring_deq(xhci);
 }
 
+static void xhci_disable_port_wake_on_bits(struct xhci_hcd *xhci)
+{
+	int port_index;
+	__le32 __iomem **port_array;
+	unsigned long flags;
+	u32 t1, t2;
+
+	spin_lock_irqsave(&xhci->lock, flags);
+
+	/* disble usb3 ports Wake bits*/
+	port_index = xhci->num_usb3_ports;
+	port_array = xhci->usb3_ports;
+	while (port_index--) {
+		t1 = readl(port_array[port_index]);
+		t1 = xhci_port_state_to_neutral(t1);
+		t2 = t1 & ~PORT_WAKE_BITS;
+		if (t1 != t2)
+			writel(t2, port_array[port_index]);
+	}
+
+	/* disble usb2 ports Wake bits*/
+	port_index = xhci->num_usb2_ports;
+	port_array = xhci->usb2_ports;
+	while (port_index--) {
+		t1 = readl(port_array[port_index]);
+		t1 = xhci_port_state_to_neutral(t1);
+		t2 = t1 & ~PORT_WAKE_BITS;
+		if (t1 != t2)
+			writel(t2, port_array[port_index]);
+	}
+
+	spin_unlock_irqrestore(&xhci->lock, flags);
+}
+
 /*
  * Stop HC (not bus-specific)
  *
  * This is called when the machine transition into S3/S4 mode.
  *
  */
-int xhci_suspend(struct xhci_hcd *xhci)
+int xhci_suspend(struct xhci_hcd *xhci, bool do_wakeup)
 {
 	int			rc = 0;
+	unsigned int		delay = XHCI_MAX_HALT_USEC;
 	struct usb_hcd		*hcd = xhci_to_hcd(xhci);
 	u32			command;
 
 	if (hcd->state != HC_STATE_SUSPENDED ||
 			xhci->shared_hcd->state != HC_STATE_SUSPENDED)
 		return -EINVAL;
+
+	/* Clear root port wake on bits if wakeup not allowed. */
+	if (!do_wakeup)
+		xhci_disable_port_wake_on_bits(xhci);
 
 	/* Don't poll the roothubs on bus suspend. */
 	xhci_dbg(xhci, "%s: stopping port polling.\n", __func__);
@@ -861,8 +912,12 @@ int xhci_suspend(struct xhci_hcd *xhci)
 	command = xhci_readl(xhci, &xhci->op_regs->command);
 	command &= ~CMD_RUN;
 	xhci_writel(xhci, command, &xhci->op_regs->command);
+
+	/* Some chips from Fresco Logic need an extraordinary delay */
+	delay *= (xhci->quirks & XHCI_SLOW_SUSPEND) ? 10 : 1;
+
 	if (xhci_handshake(xhci, &xhci->op_regs->status,
-		      STS_HALT, STS_HALT, XHCI_MAX_HALT_USEC)) {
+		      STS_HALT, STS_HALT, delay)) {
 		xhci_warn(xhci, "WARN: xHC CMD_RUN timeout\n");
 		spin_unlock_irq(&xhci->lock);
 		return -ETIMEDOUT;
@@ -911,7 +966,7 @@ int xhci_suspend(struct xhci_hcd *xhci)
  */
 int xhci_resume(struct xhci_hcd *xhci, bool hibernated)
 {
-	u32			command, temp = 0;
+	u32			command, temp = 0, status;
 	struct usb_hcd		*hcd = xhci_to_hcd(xhci);
 	struct usb_hcd		*secondary_hcd;
 	int			retval = 0;
@@ -1030,8 +1085,12 @@ int xhci_resume(struct xhci_hcd *xhci, bool hibernated)
 
  done:
 	if (retval == 0) {
-		usb_hcd_resume_root_hub(hcd);
-		usb_hcd_resume_root_hub(xhci->shared_hcd);
+		/* Resume root hubs only when have pending events. */
+		status = readl(&xhci->op_regs->status);
+		if (status & STS_EINT) {
+			usb_hcd_resume_root_hub(hcd);
+			usb_hcd_resume_root_hub(xhci->shared_hcd);
+		}
 	}
 
 	/*
@@ -2598,15 +2657,7 @@ static int xhci_configure_endpoint(struct xhci_hcd *xhci,
 	if (command) {
 		cmd_completion = command->completion;
 		cmd_status = &command->status;
-		command->command_trb = xhci->cmd_ring->enqueue;
-
-		/* Enqueue pointer can be left pointing to the link TRB,
-		 * we must handle that
-		 */
-		if (TRB_TYPE_LINK_LE32(command->command_trb->link.control))
-			command->command_trb =
-				xhci->cmd_ring->enq_seg->next->trbs;
-
+		command->command_trb = xhci_find_next_enqueue(xhci->cmd_ring);
 		list_add_tail(&command->cmd_list, &virt_dev->cmd_list);
 	} else {
 		cmd_completion = &virt_dev->cmd_completion;
@@ -2614,7 +2665,7 @@ static int xhci_configure_endpoint(struct xhci_hcd *xhci,
 	}
 	init_completion(cmd_completion);
 
-	cmd_trb = xhci->cmd_ring->dequeue;
+	cmd_trb = xhci_find_next_enqueue(xhci->cmd_ring);
 	if (!ctx_change)
 		ret = xhci_queue_configure_endpoint(xhci, in_ctx->dma,
 				udev->slot_id, must_succeed);
@@ -2873,64 +2924,33 @@ void xhci_cleanup_stalled_ring(struct xhci_hcd *xhci,
 	}
 }
 
-/* Deal with stalled endpoints.  The core should have sent the control message
- * to clear the halt condition.  However, we need to make the xHCI hardware
- * reset its sequence number, since a device will expect a sequence number of
- * zero after the halt condition is cleared.
+/* Called when clearing halted device. The core should have sent the control
+ * message to clear the device halt condition. The host side of the halt should
+ * already be cleared with a reset endpoint command issued when the STALL tx
+ * event was received.
+ *
  * Context: in_interrupt
  */
+
 void xhci_endpoint_reset(struct usb_hcd *hcd,
 		struct usb_host_endpoint *ep)
 {
 	struct xhci_hcd *xhci;
-	struct usb_device *udev;
-	unsigned int ep_index;
-	unsigned long flags;
-	int ret;
-	struct xhci_virt_ep *virt_ep;
 
 	xhci = hcd_to_xhci(hcd);
-	udev = (struct usb_device *) ep->hcpriv;
-	/* Called with a root hub endpoint (or an endpoint that wasn't added
-	 * with xhci_add_endpoint()
-	 */
-	if (!ep->hcpriv)
-		return;
-	ep_index = xhci_get_endpoint_index(&ep->desc);
-	virt_ep = &xhci->devs[udev->slot_id]->eps[ep_index];
-	if (!virt_ep->stopped_td) {
-		xhci_dbg_trace(xhci, trace_xhci_dbg_reset_ep,
-			"Endpoint 0x%x not halted, refusing to reset.",
-			ep->desc.bEndpointAddress);
-		return;
-	}
-	if (usb_endpoint_xfer_control(&ep->desc)) {
-		xhci_dbg_trace(xhci, trace_xhci_dbg_reset_ep,
-				"Control endpoint stall already handled.");
-		return;
-	}
 
-	xhci_dbg_trace(xhci, trace_xhci_dbg_reset_ep,
-			"Queueing reset endpoint command");
-	spin_lock_irqsave(&xhci->lock, flags);
-	ret = xhci_queue_reset_ep(xhci, udev->slot_id, ep_index);
 	/*
-	 * Can't change the ring dequeue pointer until it's transitioned to the
-	 * stopped state, which is only upon a successful reset endpoint
-	 * command.  Better hope that last command worked!
+	 * We might need to implement the config ep cmd in xhci 4.8.1 note:
+	 * The Reset Endpoint Command may only be issued to endpoints in the
+	 * Halted state. If software wishes reset the Data Toggle or Sequence
+	 * Number of an endpoint that isn't in the Halted state, then software
+	 * may issue a Configure Endpoint Command with the Drop and Add bits set
+	 * for the target endpoint. that is in the Stopped state.
 	 */
-	if (!ret) {
-		xhci_cleanup_stalled_ring(xhci, udev, ep_index);
-		kfree(virt_ep->stopped_td);
-		xhci_ring_cmd_db(xhci);
-	}
-	virt_ep->stopped_td = NULL;
-	virt_ep->stopped_trb = NULL;
-	virt_ep->stopped_stream = 0;
-	spin_unlock_irqrestore(&xhci->lock, flags);
 
-	if (ret)
-		xhci_warn(xhci, "FIXME allocate a new ring segment\n");
+	/* For now just print debug to follow the situation */
+	xhci_dbg(xhci, "Endpoint 0x%x ep reset callback called\n",
+		 ep->desc.bEndpointAddress);
 }
 
 static int xhci_check_streams_endpoint(struct xhci_hcd *xhci,
@@ -3439,14 +3459,7 @@ int xhci_discover_or_reset_device(struct usb_hcd *hcd, struct usb_device *udev)
 
 	/* Attempt to submit the Reset Device command to the command ring */
 	spin_lock_irqsave(&xhci->lock, flags);
-	reset_device_cmd->command_trb = xhci->cmd_ring->enqueue;
-
-	/* Enqueue pointer can be left pointing to the link TRB,
-	 * we must handle that
-	 */
-	if (TRB_TYPE_LINK_LE32(reset_device_cmd->command_trb->link.control))
-		reset_device_cmd->command_trb =
-			xhci->cmd_ring->enq_seg->next->trbs;
+	reset_device_cmd->command_trb = xhci_find_next_enqueue(xhci->cmd_ring);
 
 	list_add_tail(&reset_device_cmd->cmd_list, &virt_dev->cmd_list);
 	ret = xhci_queue_reset_device(xhci, slot_id);
@@ -3650,7 +3663,7 @@ int xhci_alloc_dev(struct usb_hcd *hcd, struct usb_device *udev)
 	union xhci_trb *cmd_trb;
 
 	spin_lock_irqsave(&xhci->lock, flags);
-	cmd_trb = xhci->cmd_ring->dequeue;
+	cmd_trb = xhci_find_next_enqueue(xhci->cmd_ring);
 	ret = xhci_queue_slot_control(xhci, TRB_ENABLE_SLOT, 0);
 	if (ret) {
 		spin_unlock_irqrestore(&xhci->lock, flags);
@@ -3785,7 +3798,7 @@ int xhci_address_device(struct usb_hcd *hcd, struct usb_device *udev)
 				slot_ctx->dev_info >> 27);
 
 	spin_lock_irqsave(&xhci->lock, flags);
-	cmd_trb = xhci->cmd_ring->dequeue;
+	cmd_trb = xhci_find_next_enqueue(xhci->cmd_ring);
 	ret = xhci_queue_address_device(xhci, virt_dev->in_ctx->dma,
 					udev->slot_id);
 	if (ret) {
@@ -3922,13 +3935,21 @@ static int __maybe_unused xhci_change_max_exit_latency(struct xhci_hcd *xhci,
 	int ret;
 
 	spin_lock_irqsave(&xhci->lock, flags);
-	if (max_exit_latency == xhci->devs[udev->slot_id]->current_mel) {
+
+	virt_dev = xhci->devs[udev->slot_id];
+
+	/*
+	 * virt_dev might not exists yet if xHC resumed from hibernate (S4) and
+	 * xHC was re-initialized. Exit latency will be set later after
+	 * hub_port_finish_reset() is done and xhci->devs[] are re-allocated
+	 */
+
+	if (!virt_dev || max_exit_latency == virt_dev->current_mel) {
 		spin_unlock_irqrestore(&xhci->lock, flags);
 		return 0;
 	}
 
 	/* Attempt to issue an Evaluate Context command to change the MEL. */
-	virt_dev = xhci->devs[udev->slot_id];
 	command = xhci->lpm_command;
 	ctrl_ctx = xhci_get_input_control_ctx(xhci, command->in_ctx);
 	if (!ctrl_ctx) {
@@ -4028,133 +4049,6 @@ static int xhci_calculate_usb2_hw_lpm_params(struct usb_device *udev)
 	return PORT_BESLD(besld) | PORT_L1_TIMEOUT(l1) | PORT_HIRDM(hirdm);
 }
 
-static int xhci_usb2_software_lpm_test(struct usb_hcd *hcd,
-					struct usb_device *udev)
-{
-	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
-	struct dev_info	*dev_info;
-	__le32 __iomem	**port_array;
-	__le32 __iomem	*addr, *pm_addr;
-	u32		temp, dev_id;
-	unsigned int	port_num;
-	unsigned long	flags;
-	int		hird;
-	int		ret;
-
-	if (hcd->speed == HCD_USB3 || !xhci->sw_lpm_support ||
-			!udev->lpm_capable)
-		return -EINVAL;
-
-	/* we only support lpm for non-hub device connected to root hub yet */
-	if (!udev->parent || udev->parent->parent ||
-			udev->descriptor.bDeviceClass == USB_CLASS_HUB)
-		return -EINVAL;
-
-	spin_lock_irqsave(&xhci->lock, flags);
-
-	/* Look for devices in lpm_failed_devs list */
-	dev_id = le16_to_cpu(udev->descriptor.idVendor) << 16 |
-			le16_to_cpu(udev->descriptor.idProduct);
-	list_for_each_entry(dev_info, &xhci->lpm_failed_devs, list) {
-		if (dev_info->dev_id == dev_id) {
-			ret = -EINVAL;
-			goto finish;
-		}
-	}
-
-	port_array = xhci->usb2_ports;
-	port_num = udev->portnum - 1;
-
-	if (port_num > HCS_MAX_PORTS(xhci->hcs_params1)) {
-		xhci_dbg(xhci, "invalid port number %d\n", udev->portnum);
-		ret = -EINVAL;
-		goto finish;
-	}
-
-	/*
-	 * Test USB 2.0 software LPM.
-	 * FIXME: some xHCI 1.0 hosts may implement a new register to set up
-	 * hardware-controlled USB 2.0 LPM. See section 5.4.11 and 4.23.5.1.1.1
-	 * in the June 2011 errata release.
-	 */
-	xhci_dbg(xhci, "test port %d software LPM\n", port_num);
-	/*
-	 * Set L1 Device Slot and HIRD/BESL.
-	 * Check device's USB 2.0 extension descriptor to determine whether
-	 * HIRD or BESL shoule be used. See USB2.0 LPM errata.
-	 */
-	pm_addr = port_array[port_num] + PORTPMSC;
-	hird = xhci_calculate_hird_besl(xhci, udev);
-	temp = PORT_L1DS(udev->slot_id) | PORT_HIRD(hird);
-	xhci_writel(xhci, temp, pm_addr);
-
-	/* Set port link state to U2(L1) */
-	addr = port_array[port_num];
-	xhci_set_link_state(xhci, port_array, port_num, XDEV_U2);
-
-	/* wait for ACK */
-	spin_unlock_irqrestore(&xhci->lock, flags);
-	msleep(10);
-	spin_lock_irqsave(&xhci->lock, flags);
-
-	/* Check L1 Status */
-	ret = xhci_handshake(xhci, pm_addr,
-			PORT_L1S_MASK, PORT_L1S_SUCCESS, 125);
-	if (ret != -ETIMEDOUT) {
-		/* enter L1 successfully */
-		temp = xhci_readl(xhci, addr);
-		xhci_dbg(xhci, "port %d entered L1 state, port status 0x%x\n",
-				port_num, temp);
-		ret = 0;
-	} else {
-		temp = xhci_readl(xhci, pm_addr);
-		xhci_dbg(xhci, "port %d software lpm failed, L1 status %d\n",
-				port_num, temp & PORT_L1S_MASK);
-		ret = -EINVAL;
-	}
-
-	/* Resume the port */
-	xhci_set_link_state(xhci, port_array, port_num, XDEV_U0);
-
-	spin_unlock_irqrestore(&xhci->lock, flags);
-	msleep(10);
-	spin_lock_irqsave(&xhci->lock, flags);
-
-	/* Clear PLC */
-	xhci_test_and_clear_bit(xhci, port_array, port_num, PORT_PLC);
-
-	/* Check PORTSC to make sure the device is in the right state */
-	if (!ret) {
-		temp = xhci_readl(xhci, addr);
-		xhci_dbg(xhci, "resumed port %d status 0x%x\n",	port_num, temp);
-		if (!(temp & PORT_CONNECT) || !(temp & PORT_PE) ||
-				(temp & PORT_PLS_MASK) != XDEV_U0) {
-			xhci_dbg(xhci, "port L1 resume fail\n");
-			ret = -EINVAL;
-		}
-	}
-
-	if (ret) {
-		/* Insert dev to lpm_failed_devs list */
-		xhci_warn(xhci, "device LPM test failed, may disconnect and "
-				"re-enumerate\n");
-		dev_info = kzalloc(sizeof(struct dev_info), GFP_ATOMIC);
-		if (!dev_info) {
-			ret = -ENOMEM;
-			goto finish;
-		}
-		dev_info->dev_id = dev_id;
-		INIT_LIST_HEAD(&dev_info->list);
-		list_add(&dev_info->list, &xhci->lpm_failed_devs);
-	} else {
-		xhci_ring_device(xhci, udev->slot_id);
-	}
-
-finish:
-	spin_unlock_irqrestore(&xhci->lock, flags);
-	return ret;
-}
-
 int xhci_set_usb2_hardware_lpm(struct usb_hcd *hcd,
 			struct usb_device *udev, int enable)
 {
@@ -4231,7 +4125,7 @@ int xhci_set_usb2_hardware_lpm(struct usb_hcd *hcd,
 		}
 
 		pm_val &= ~PORT_HIRD_MASK;
-		pm_val |= PORT_HIRD(hird) | PORT_RWE;
+		pm_val |= PORT_HIRD(hird) | PORT_RWE | PORT_L1DS(udev->slot_id);
 		xhci_writel(xhci, pm_val, pm_addr);
 		pm_val = xhci_readl(xhci, pm_addr);
 		pm_val |= PORT_HLE;
@@ -4239,7 +4133,7 @@ int xhci_set_usb2_hardware_lpm(struct usb_hcd *hcd,
 		/* flush write */
 		xhci_readl(xhci, pm_addr);
 	} else {
-		pm_val &= ~(PORT_HLE | PORT_RWE | PORT_HIRD_MASK);
+		pm_val &= ~(PORT_HLE | PORT_RWE | PORT_HIRD_MASK | PORT_L1DS_MASK);
 		xhci_writel(xhci, pm_val, pm_addr);
 		/* flush write */
 		xhci_readl(xhci, pm_addr);
@@ -4282,24 +4176,26 @@ static int xhci_check_usb2_port_capability(struct xhci_hcd *xhci, int port,
 int xhci_update_device(struct usb_hcd *hcd, struct usb_device *udev)
 {
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
-	int		ret;
 	int		portnum = udev->portnum - 1;
 
-	ret = xhci_usb2_software_lpm_test(hcd, udev);
-	if (!ret) {
-		xhci_dbg(xhci, "software LPM test succeed\n");
-		if (xhci->hw_lpm_support == 1 &&
-		    xhci_check_usb2_port_capability(xhci, portnum, XHCI_HLC)) {
-			udev->usb2_hw_lpm_capable = 1;
-			udev->l1_params.timeout = XHCI_L1_TIMEOUT;
-			udev->l1_params.besl = XHCI_DEFAULT_BESL;
-			if (xhci_check_usb2_port_capability(xhci, portnum,
-							    XHCI_BLC))
-				udev->usb2_hw_lpm_besl_capable = 1;
-			ret = xhci_set_usb2_hardware_lpm(hcd, udev, 1);
-			if (!ret)
-				udev->usb2_hw_lpm_enabled = 1;
-		}
+	if (hcd->speed == HCD_USB3 || !xhci->sw_lpm_support ||
+			!udev->lpm_capable)
+		return 0;
+
+	/* we only support lpm for non-hub device connected to root hub yet */
+	if (!udev->parent || udev->parent->parent ||
+			udev->descriptor.bDeviceClass == USB_CLASS_HUB)
+		return 0;
+
+	if (xhci->hw_lpm_support == 1 &&
+			xhci_check_usb2_port_capability(
+				xhci, portnum, XHCI_HLC)) {
+		udev->usb2_hw_lpm_capable = 1;
+		udev->l1_params.timeout = XHCI_L1_TIMEOUT;
+		udev->l1_params.besl = XHCI_DEFAULT_BESL;
+		if (xhci_check_usb2_port_capability(xhci, portnum,
+					XHCI_BLC))
+			udev->usb2_hw_lpm_besl_capable = 1;
 	}
 
 	return 0;

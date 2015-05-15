@@ -319,6 +319,10 @@ xfs_buf_item_format(
 	ASSERT(atomic_read(&bip->bli_refcount) > 0);
 	ASSERT((bip->bli_flags & XFS_BLI_LOGGED) ||
 	       (bip->bli_flags & XFS_BLI_STALE));
+	ASSERT((bip->bli_flags & XFS_BLI_STALE) ||
+	       (xfs_blft_from_flags(&bip->__bli_format) > XFS_BLFT_UNKNOWN_BUF
+	        && xfs_blft_from_flags(&bip->__bli_format) < XFS_BLFT_MAX_BUF));
+
 
 	/*
 	 * If it is an inode buffer, transfer the in-memory state to the
@@ -628,6 +632,7 @@ xfs_buf_item_unlock(
 		else if (aborted) {
 			ASSERT(XFS_FORCED_SHUTDOWN(lip->li_mountp));
 			if (lip->li_flags & XFS_LI_IN_AIL) {
+				spin_lock(&lip->li_ailp->xa_lock);
 				xfs_trans_ail_delete(lip->li_ailp, lip,
 						     SHUTDOWN_LOG_IO_ERROR);
 			}

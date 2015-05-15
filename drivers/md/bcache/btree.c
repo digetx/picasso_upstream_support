@@ -141,7 +141,7 @@ static void bch_btree_node_read_done(struct btree *b)
 	struct bset *i = b->sets[0].data;
 	struct btree_iter *iter;
 
-	iter = mempool_alloc(b->c->fill_iter, GFP_NOWAIT);
+	iter = mempool_alloc(b->c->fill_iter, GFP_NOIO);
 	iter->size = b->c->sb.bucket_size / b->c->sb.block_size;
 	iter->used = 0;
 
@@ -255,7 +255,7 @@ void bch_btree_node_read(struct btree *b)
 
 	return;
 err:
-	bch_cache_set_error(b->c, "io error reading bucket %lu",
+	bch_cache_set_error(b->c, "io error reading bucket %zu",
 			    PTR_BUCKET_NR(b->c, &b->key, 0));
 }
 
@@ -612,7 +612,7 @@ static unsigned long bch_mca_scan(struct shrinker *shrink,
 		return SHRINK_STOP;
 
 	/* Return -1 if we can't do anything right now */
-	if (sc->gfp_mask & __GFP_WAIT)
+	if (sc->gfp_mask & __GFP_IO)
 		mutex_lock(&c->bucket_lock);
 	else if (!mutex_trylock(&c->bucket_lock))
 		return -1;
@@ -1742,6 +1742,9 @@ static bool fix_overlapping_extents(struct btree *b,
 		if (bkey_cmp(insert, k) < 0) {
 			bch_cut_front(insert, k);
 		} else {
+			if (bkey_cmp(&START_KEY(insert), &START_KEY(k)) > 0)
+				old_offset = KEY_START(insert);
+
 			if (bkey_written(b, k) &&
 			    bkey_cmp(&START_KEY(insert), &START_KEY(k)) <= 0) {
 				/*
@@ -1803,6 +1806,10 @@ static bool btree_insert_key(struct btree *b, struct btree_op *op,
 		if (fix_overlapping_extents(b, k, &iter, op))
 			return false;
 
+		if (KEY_DIRTY(k))
+			bcache_dev_sectors_dirty_add(b->c, KEY_INODE(k),
+						     KEY_START(k), KEY_SIZE(k));
+
 		while (m != end(i) &&
 		       bkey_cmp(k, &START_KEY(m)) > 0)
 			prev = m, m = bkey_next(m);
@@ -1831,10 +1838,6 @@ static bool btree_insert_key(struct btree *b, struct btree_op *op,
 insert:	shift_keys(b, m, k);
 copy:	bkey_copy(m, k);
 merged:
-	if (KEY_DIRTY(k))
-		bcache_dev_sectors_dirty_add(b->c, KEY_INODE(k),
-					     KEY_START(k), KEY_SIZE(k));
-
 	bch_check_keys(b, "%u for %s", status, op_type(op));
 
 	if (b->level && !KEY_OFFSET(k))

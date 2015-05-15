@@ -117,7 +117,7 @@ static int pcm1681_get_deemph(struct snd_kcontrol *kcontrol,
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
 	struct pcm1681_private *priv = snd_soc_codec_get_drvdata(codec);
 
-	ucontrol->value.enumerated.item[0] = priv->deemph;
+	ucontrol->value.integer.value[0] = priv->deemph;
 
 	return 0;
 }
@@ -128,7 +128,7 @@ static int pcm1681_put_deemph(struct snd_kcontrol *kcontrol,
 	struct snd_soc_codec *codec = snd_kcontrol_chip(kcontrol);
 	struct pcm1681_private *priv = snd_soc_codec_get_drvdata(codec);
 
-	priv->deemph = ucontrol->value.enumerated.item[0];
+	priv->deemph = ucontrol->value.integer.value[0];
 
 	return pcm1681_set_deemph(codec);
 }
@@ -270,7 +270,7 @@ MODULE_DEVICE_TABLE(of, pcm1681_dt_ids);
 static const struct regmap_config pcm1681_regmap = {
 	.reg_bits		= 8,
 	.val_bits		= 8,
-	.max_register		= ARRAY_SIZE(pcm1681_reg_defaults) + 1,
+	.max_register		= 0x13,
 	.reg_defaults		= pcm1681_reg_defaults,
 	.num_reg_defaults	= ARRAY_SIZE(pcm1681_reg_defaults),
 	.writeable_reg		= pcm1681_writeable_reg,

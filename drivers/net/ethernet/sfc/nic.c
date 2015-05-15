@@ -155,13 +155,15 @@ void efx_nic_fini_interrupt(struct efx_nic *efx)
 	efx->net_dev->rx_cpu_rmap = NULL;
 #endif
 
-	/* Disable MSI/MSI-X interrupts */
-	efx_for_each_channel(channel, efx)
-		free_irq(channel->irq, &efx->msi_context[channel->channel]);
-
-	/* Disable legacy interrupt */
-	if (efx->legacy_irq)
+	if (EFX_INT_MODE_USE_MSI(efx)) {
+		/* Disable MSI/MSI-X interrupts */
+		efx_for_each_channel(channel, efx)
+			free_irq(channel->irq,
+				 &efx->msi_context[channel->channel]);
+	} else {
+		/* Disable legacy interrupt */
 		free_irq(efx->legacy_irq, efx);
+	}
 }
 
 /* Register dump */
@@ -469,8 +471,7 @@ size_t efx_nic_describe_stats(const struct efx_hw_stat_desc *desc, size_t count,
  * @count: Length of the @desc array
  * @mask: Bitmask of which elements of @desc are enabled
  * @stats: Buffer to update with the converted statistics.  The length
- *	of this array must be at least the number of set bits in the
- *	first @count bits of @mask.
+ *	of this array must be at least @count.
  * @dma_buf: DMA buffer containing hardware statistics
  * @accumulate: If set, the converted values will be added rather than
  *	directly stored to the corresponding elements of @stats
@@ -503,11 +504,9 @@ void efx_nic_update_stats(const struct efx_hw_stat_desc *desc, size_t count,
 			}
 
 			if (accumulate)
-				*stats += val;
+				stats[index] += val;
 			else
-				*stats = val;
+				stats[index] = val;
 		}
-
-		++stats;
 	}
 }

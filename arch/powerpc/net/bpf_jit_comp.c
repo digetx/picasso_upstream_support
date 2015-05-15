@@ -209,10 +209,11 @@ static int bpf_jit_build_body(struct sk_filter *fp, u32 *image,
 			}
 			PPC_DIVWU(r_A, r_A, r_X);
 			break;
-		case BPF_S_ALU_DIV_K: /* A = reciprocal_divide(A, K); */
+		case BPF_S_ALU_DIV_K: /* A /= K */
+			if (K == 1)
+				break;
 			PPC_LI32(r_scratch1, K);
-			/* Top 32 bits of 64bit result -> A */
-			PPC_MULHWU(r_A, r_A, r_scratch1);
+			PPC_DIVWU(r_A, r_A, r_scratch1);
 			break;
 		case BPF_S_ALU_AND_X:
 			ctx->seen |= SEEN_XREG;
@@ -691,4 +692,5 @@ void bpf_jit_free(struct sk_filter *fp)
 {
 	if (fp->bpf_func != sk_run_filter)
 		module_free(NULL, fp->bpf_func);
+	kfree(fp);
 }

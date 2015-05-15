@@ -265,6 +265,13 @@ static void notrace start_secondary(void *unused)
 	check_tsc_sync_target();
 
 	/*
+	 * Enable the espfix hack for this CPU
+	 */
+#ifdef CONFIG_X86_ESPFIX64
+	init_espfix_ap();
+#endif
+
+	/*
 	 * We need to hold vector_lock so there the set of online cpus
 	 * does not change while we are assigning vectors to cpus.  Holding
 	 * this lock ensures we don't half assign or remove an irq from a cpu.
@@ -653,6 +660,7 @@ static void announce_cpu(int cpu, int apicid)
 {
 	static int current_node = -1;
 	int node = early_cpu_to_node(cpu);
+	int max_cpu_present = find_last_bit(cpumask_bits(cpu_present_mask), NR_CPUS);
 
 	if (system_state == SYSTEM_BOOTING) {
 		if (node != current_node) {
@@ -661,7 +669,7 @@ static void announce_cpu(int cpu, int apicid)
 			current_node = node;
 			pr_info("Booting Node %3d, Processors ", node);
 		}
-		pr_cont(" #%d%s", cpu, cpu == (nr_cpu_ids - 1) ? " OK\n" : "");
+		pr_cont(" #%4d%s", cpu, cpu == max_cpu_present ? " OK\n" : "");
 		return;
 	} else
 		pr_info("Booting Node %d Processor %d APIC 0x%x\n",
@@ -1277,6 +1285,9 @@ static void remove_siblinginfo(int cpu)
 
 	for_each_cpu(sibling, cpu_sibling_mask(cpu))
 		cpumask_clear_cpu(cpu, cpu_sibling_mask(sibling));
+	for_each_cpu(sibling, cpu_llc_shared_mask(cpu))
+		cpumask_clear_cpu(cpu, cpu_llc_shared_mask(sibling));
+	cpumask_clear(cpu_llc_shared_mask(cpu));
 	cpumask_clear(cpu_sibling_mask(cpu));
 	cpumask_clear(cpu_core_mask(cpu));
 	c->phys_proc_id = 0;
@@ -1309,6 +1320,12 @@ void cpu_disable_common(void)
 
 int native_cpu_disable(void)
 {
+	int ret;
+
+	ret = check_irq_vectors_for_cpu_disable();
+	if (ret)
+		return ret;
+
 	clear_local_APIC();
 
 	cpu_disable_common();

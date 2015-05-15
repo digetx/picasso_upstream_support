@@ -167,6 +167,15 @@ static inline void shm_lock_by_ptr(struct shmid_kernel *ipcp)
 	ipc_lock_object(&ipcp->shm_perm);
 }
 
+static void shm_rcu_free(struct rcu_head *head)
+{
+	struct ipc_rcu *p = container_of(head, struct ipc_rcu, rcu);
+	struct shmid_kernel *shp = ipc_rcu_to_struct(p);
+
+	security_shm_free(shp);
+	ipc_rcu_free(head);
+}
+
 static inline void shm_rmid(struct ipc_namespace *ns, struct shmid_kernel *s)
 {
 	ipc_rmid(&shm_ids(ns), &s->shm_perm);
@@ -199,17 +208,20 @@ static void shm_open(struct vm_area_struct *vma)
  */
 static void shm_destroy(struct ipc_namespace *ns, struct shmid_kernel *shp)
 {
+	struct file *shm_file;
+
+	shm_file = shp->shm_file;
+	shp->shm_file = NULL;
 	ns->shm_tot -= (shp->shm_segsz + PAGE_SIZE - 1) >> PAGE_SHIFT;
 	shm_rmid(ns, shp);
 	shm_unlock(shp);
-	if (!is_file_hugepages(shp->shm_file))
-		shmem_lock(shp->shm_file, 0, shp->mlock_user);
+	if (!is_file_hugepages(shm_file))
+		shmem_lock(shm_file, 0, shp->mlock_user);
 	else if (shp->mlock_user)
-		user_shm_unlock(file_inode(shp->shm_file)->i_size,
-						shp->mlock_user);
-	fput (shp->shm_file);
-	security_shm_free(shp);
-	ipc_rcu_putref(shp);
+		user_shm_unlock(i_size_read(file_inode(shm_file)),
+				shp->mlock_user);
+	fput(shm_file);
+	ipc_rcu_putref(shp, shm_rcu_free);
 }
 
 /*
@@ -497,7 +509,7 @@ static int newseg(struct ipc_namespace *ns, struct ipc_params *params)
 	shp->shm_perm.security = NULL;
 	error = security_shm_alloc(shp);
 	if (error) {
-		ipc_rcu_putref(shp);
+		ipc_rcu_putref(shp, ipc_rcu_free);
 		return error;
 	}
 
@@ -566,8 +578,7 @@ no_id:
 		user_shm_unlock(size, shp->mlock_user);
 	fput(file);
 no_file:
-	security_shm_free(shp);
-	ipc_rcu_putref(shp);
+	ipc_rcu_putref(shp, shm_rcu_free);
 	return error;
 }
 
@@ -967,15 +978,25 @@ SYSCALL_DEFINE3(shmctl, int, shmid, int, cmd, struct shmid_ds __user *, buf)
 		ipc_lock_object(&shp->shm_perm);
 		if (!ns_capable(ns->user_ns, CAP_IPC_LOCK)) {
 			kuid_t euid = current_euid();
-			err = -EPERM;
 			if (!uid_eq(euid, shp->shm_perm.uid) &&
-			    !uid_eq(euid, shp->shm_perm.cuid))
+			    !uid_eq(euid, shp->shm_perm.cuid)) {
+				err = -EPERM;
 				goto out_unlock0;
-			if (cmd == SHM_LOCK && !rlimit(RLIMIT_MEMLOCK))
+			}
+			if (cmd == SHM_LOCK && !rlimit(RLIMIT_MEMLOCK)) {
+				err = -EPERM;
 				goto out_unlock0;
+			}
 		}
 
 		shm_file = shp->shm_file;
+
+		/* check if shm_destroy() is tearing down shp */
+		if (shm_file == NULL) {
+			err = -EIDRM;
+			goto out_unlock0;
+		}
+
 		if (is_file_hugepages(shm_file))
 			goto out_unlock0;
 
@@ -1094,6 +1115,14 @@ long do_shmat(int shmid, char __user *shmaddr, int shmflg, ulong *raddr,
 		goto out_unlock;
 
 	ipc_lock_object(&shp->shm_perm);
+
+	/* check if shm_destroy() is tearing down shp */
+	if (shp->shm_file == NULL) {
+		ipc_unlock_object(&shp->shm_perm);
+		err = -EIDRM;
+		goto out_unlock;
+	}
+
 	path = shp->shm_file->f_path;
 	path_get(&path);
 	shp->shm_nattch++;
@@ -1199,6 +1228,7 @@ SYSCALL_DEFINE1(shmdt, char __user *, shmaddr)
 	int retval = -EINVAL;
 #ifdef CONFIG_MMU
 	loff_t size = 0;
+	struct file *file;
 	struct vm_area_struct *next;
 #endif
 
@@ -1215,7 +1245,8 @@ SYSCALL_DEFINE1(shmdt, char __user *, shmaddr)
 	 *   started at address shmaddr. It records it's size and then unmaps
 	 *   it.
 	 * - Then it unmaps all shm vmas that started at shmaddr and that
-	 *   are within the initially determined size.
+	 *   are within the initially determined size and that are from the
+	 *   same shm segment from which we determined the size.
 	 * Errors from do_munmap are ignored: the function only fails if
 	 * it's called with invalid parameters or if it's called to unmap
 	 * a part of a vma. Both calls in this function are for full vmas,
@@ -1241,8 +1272,14 @@ SYSCALL_DEFINE1(shmdt, char __user *, shmaddr)
 		if ((vma->vm_ops == &shm_vm_ops) &&
 			(vma->vm_start - addr)/PAGE_SIZE == vma->vm_pgoff) {
 
-
-			size = file_inode(vma->vm_file)->i_size;
+			/*
+			 * Record the file of the shm segment being
+			 * unmapped.  With mremap(), someone could place
+			 * page from another segment but with equal offsets
+			 * in the range we are unmapping.
+			 */
+			file = vma->vm_file;
+			size = i_size_read(file_inode(vma->vm_file));
 			do_munmap(mm, vma->vm_start, vma->vm_end - vma->vm_start);
 			/*
 			 * We discovered the size of the shm segment, so
@@ -1268,8 +1305,8 @@ SYSCALL_DEFINE1(shmdt, char __user *, shmaddr)
 
 		/* finding a matching vma now does not alter retval */
 		if ((vma->vm_ops == &shm_vm_ops) &&
-			(vma->vm_start - addr)/PAGE_SIZE == vma->vm_pgoff)
-
+		    ((vma->vm_start - addr)/PAGE_SIZE == vma->vm_pgoff) &&
+		    (vma->vm_file == file))
 			do_munmap(mm, vma->vm_start, vma->vm_end - vma->vm_start);
 		vma = next;
 	}

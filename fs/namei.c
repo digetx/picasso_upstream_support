@@ -34,6 +34,7 @@
 #include <linux/device_cgroup.h>
 #include <linux/fs_struct.h>
 #include <linux/posix_acl.h>
+#include <linux/hash.h>
 #include <asm/uaccess.h>
 
 #include "internal.h"
@@ -321,10 +322,11 @@ int generic_permission(struct inode *inode, int mask)
 
 	if (S_ISDIR(inode->i_mode)) {
 		/* DACs are overridable for directories */
-		if (inode_capable(inode, CAP_DAC_OVERRIDE))
+		if (capable_wrt_inode_uidgid(inode, CAP_DAC_OVERRIDE))
 			return 0;
 		if (!(mask & MAY_WRITE))
-			if (inode_capable(inode, CAP_DAC_READ_SEARCH))
+			if (capable_wrt_inode_uidgid(inode,
+						     CAP_DAC_READ_SEARCH))
 				return 0;
 		return -EACCES;
 	}
@@ -334,7 +336,7 @@ int generic_permission(struct inode *inode, int mask)
 	 * at least one exec bit set.
 	 */
 	if (!(mask & MAY_EXEC) || (inode->i_mode & S_IXUGO))
-		if (inode_capable(inode, CAP_DAC_OVERRIDE))
+		if (capable_wrt_inode_uidgid(inode, CAP_DAC_OVERRIDE))
 			return 0;
 
 	/*
@@ -342,7 +344,7 @@ int generic_permission(struct inode *inode, int mask)
 	 */
 	mask &= MAY_READ | MAY_WRITE | MAY_EXEC;
 	if (mask == MAY_READ)
-		if (inode_capable(inode, CAP_DAC_READ_SEARCH))
+		if (capable_wrt_inode_uidgid(inode, CAP_DAC_READ_SEARCH))
 			return 0;
 
 	return -EACCES;
@@ -640,24 +642,22 @@ static int complete_walk(struct nameidata *nd)
 
 static __always_inline void set_root(struct nameidata *nd)
 {
-	if (!nd->root.mnt)
-		get_fs_root(current->fs, &nd->root);
+	get_fs_root(current->fs, &nd->root);
 }
 
 static int link_path_walk(const char *, struct nameidata *);
 
-static __always_inline void set_root_rcu(struct nameidata *nd)
+static __always_inline unsigned set_root_rcu(struct nameidata *nd)
 {
-	if (!nd->root.mnt) {
-		struct fs_struct *fs = current->fs;
-		unsigned seq;
+	struct fs_struct *fs = current->fs;
+	unsigned seq, res;
 
-		do {
-			seq = read_seqcount_begin(&fs->seq);
-			nd->root = fs->root;
-			nd->seq = __read_seqcount_begin(&nd->root.dentry->d_seq);
-		} while (read_seqcount_retry(&fs->seq, seq));
-	}
+	do {
+		seq = read_seqcount_begin(&fs->seq);
+		nd->root = fs->root;
+		res = __read_seqcount_begin(&nd->root.dentry->d_seq);
+	} while (read_seqcount_retry(&fs->seq, seq));
+	return res;
 }
 
 static void path_put_conditional(struct path *path, struct nameidata *nd)
@@ -857,7 +857,8 @@ follow_link(struct path *link, struct nameidata *nd, void **p)
 			return PTR_ERR(s);
 		}
 		if (*s == '/') {
-			set_root(nd);
+			if (!nd->root.mnt)
+				set_root(nd);
 			path_put(&nd->path);
 			nd->path = nd->root;
 			path_get(&nd->root);
@@ -1143,7 +1144,8 @@ static void follow_mount_rcu(struct nameidata *nd)
 
 static int follow_dotdot_rcu(struct nameidata *nd)
 {
-	set_root_rcu(nd);
+	if (!nd->root.mnt)
+		set_root_rcu(nd);
 
 	while (1) {
 		if (nd->path.dentry == nd->root.dentry &&
@@ -1245,7 +1247,8 @@ static void follow_mount(struct path *path)
 
 static void follow_dotdot(struct nameidata *nd)
 {
-	set_root(nd);
+	if (!nd->root.mnt)
+		set_root(nd);
 
 	while(1) {
 		struct dentry *old = nd->path.dentry;
@@ -1660,8 +1663,7 @@ static inline int can_lookup(struct inode *inode)
 
 static inline unsigned int fold_hash(unsigned long hash)
 {
-	hash += hash >> (8*sizeof(int));
-	return hash;
+	return hash_64(hash, 32);
 }
 
 #else	/* 32-bit case */
@@ -1875,7 +1877,7 @@ static int path_init(int dfd, const char *name, unsigned int flags,
 	if (*name=='/') {
 		if (flags & LOOKUP_RCU) {
 			lock_rcu_walk();
-			set_root_rcu(nd);
+			nd->seq = set_root_rcu(nd);
 		} else {
 			set_root(nd);
 			path_get(&nd->root);
@@ -2280,9 +2282,10 @@ done:
 		goto out;
 	}
 	path->dentry = dentry;
-	path->mnt = mntget(nd->path.mnt);
+	path->mnt = nd->path.mnt;
 	if (should_follow_link(dentry->d_inode, nd->flags & LOOKUP_FOLLOW))
 		return 1;
+	mntget(path->mnt);
 	follow_mount(path);
 	error = 0;
 out:
@@ -2294,10 +2297,11 @@ out:
  * path_mountpoint - look up a path to be umounted
  * @dfd:	directory file descriptor to start walk from
  * @name:	full pathname to walk
+ * @path:	pointer to container for result
  * @flags:	lookup flags
  *
  * Look up the given name, but don't attempt to revalidate the last component.
- * Returns 0 and "path" will be valid on success; Retuns error otherwise.
+ * Returns 0 and "path" will be valid on success; Returns error otherwise.
  */
 static int
 path_mountpoint(int dfd, const char *name, struct path *path, unsigned int flags)
@@ -2403,7 +2407,7 @@ static inline int check_sticky(struct inode *dir, struct inode *inode)
 		return 0;
 	if (uid_eq(dir->i_uid, fsuid))
 		return 0;
-	return !inode_capable(inode, CAP_FOWNER);
+	return !capable_wrt_inode_uidgid(inode, CAP_FOWNER);
 }
 
 /*
@@ -2467,6 +2471,7 @@ static int may_delete(struct inode *dir,struct dentry *victim,int isdir)
  */
 static inline int may_create(struct inode *dir, struct dentry *child)
 {
+	audit_inode_child(dir, child, AUDIT_TYPE_CHILD_CREATE);
 	if (child->d_inode)
 		return -EEXIST;
 	if (IS_DEADDIR(dir))
@@ -2656,6 +2661,7 @@ static int atomic_open(struct nameidata *nd, struct dentry *dentry,
 	int acc_mode;
 	int create_error = 0;
 	struct dentry *const DENTRY_NOT_SET = (void *) -1UL;
+	bool excl;
 
 	BUG_ON(dentry->d_inode);
 
@@ -2669,10 +2675,9 @@ static int atomic_open(struct nameidata *nd, struct dentry *dentry,
 	if ((open_flag & O_CREAT) && !IS_POSIXACL(dir))
 		mode &= ~current_umask();
 
-	if ((open_flag & (O_EXCL | O_CREAT)) == (O_EXCL | O_CREAT)) {
+	excl = (open_flag & (O_EXCL | O_CREAT)) == (O_EXCL | O_CREAT);
+	if (excl)
 		open_flag &= ~O_TRUNC;
-		*opened |= FILE_CREATED;
-	}
 
 	/*
 	 * Checking write permission is tricky, bacuse we don't know if we are
@@ -2725,12 +2730,6 @@ static int atomic_open(struct nameidata *nd, struct dentry *dentry,
 		goto out;
 	}
 
-	acc_mode = op->acc_mode;
-	if (*opened & FILE_CREATED) {
-		fsnotify_create(dir, dentry);
-		acc_mode = MAY_OPEN;
-	}
-
 	if (error) {	/* returned 1, that is */
 		if (WARN_ON(file->f_path.dentry == DENTRY_NOT_SET)) {
 			error = -EIO;
@@ -2740,9 +2739,19 @@ static int atomic_open(struct nameidata *nd, struct dentry *dentry,
 			dput(dentry);
 			dentry = file->f_path.dentry;
 		}
-		if (create_error && dentry->d_inode == NULL) {
-			error = create_error;
-			goto out;
+		if (*opened & FILE_CREATED)
+			fsnotify_create(dir, dentry);
+		if (!dentry->d_inode) {
+			WARN_ON(*opened & FILE_CREATED);
+			if (create_error) {
+				error = create_error;
+				goto out;
+			}
+		} else {
+			if (excl && !(*opened & FILE_CREATED)) {
+				error = -EEXIST;
+				goto out;
+			}
 		}
 		goto looked_up;
 	}
@@ -2751,6 +2760,12 @@ static int atomic_open(struct nameidata *nd, struct dentry *dentry,
 	 * We didn't have the inode before the open, so check open permission
 	 * here.
 	 */
+	acc_mode = op->acc_mode;
+	if (*opened & FILE_CREATED) {
+		WARN_ON(!(open_flag & O_CREAT));
+		fsnotify_create(dir, dentry);
+		acc_mode = MAY_OPEN;
+	}
 	error = may_open(&file->f_path, acc_mode, open_flag);
 	if (error)
 		fput(file);
@@ -3144,7 +3159,8 @@ static int do_tmpfile(int dfd, struct filename *pathname,
 	if (error)
 		goto out2;
 	audit_inode(pathname, nd->path.dentry, 0);
-	error = may_open(&nd->path, op->acc_mode, op->open_flag);
+	/* Don't check for other permissions, the inode was just created */
+	error = may_open(&nd->path, MAY_OPEN, op->open_flag);
 	if (error)
 		goto out2;
 	file->f_path.mnt = nd->path.mnt;
@@ -3912,6 +3928,7 @@ retry:
 out_dput:
 	done_path_create(&new_path, new_dentry);
 	if (retry_estale(error, how)) {
+		path_put(&old_path);
 		how |= LOOKUP_REVAL;
 		goto retry;
 	}

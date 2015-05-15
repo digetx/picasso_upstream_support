@@ -1052,7 +1052,7 @@ ip_set_swap(struct sock *ctnl, struct sk_buff *skb,
 	 * Not an artificial restriction anymore, as we must prevent
 	 * possible loops created by swapping in setlist type of sets. */
 	if (!(from->type->features == to->type->features &&
-	      from->type->family == to->type->family))
+	      from->family == to->family))
 		return -IPSET_ERR_TYPE_MISMATCH;
 
 	strncpy(from_name, from->name, IPSET_MAXNAMELEN);
@@ -1489,8 +1489,7 @@ ip_set_utest(struct sock *ctnl, struct sk_buff *skb,
 	if (ret == -EAGAIN)
 		ret = 1;
 
-	return (ret < 0 && ret != -ENOTEMPTY) ? ret :
-		ret > 0 ? 0 : -IPSET_ERR_EXIST;
+	return ret > 0 ? 0 : -IPSET_ERR_EXIST;
 }
 
 /* Get headed data of a set */
@@ -1754,6 +1753,12 @@ ip_set_sockfn_get(struct sock *sk, int optval, void __user *user, int *len)
 	if (*op < IP_SET_OP_VERSION) {
 		/* Check the version at the beginning of operations */
 		struct ip_set_req_version *req_version = data;
+
+		if (*len < sizeof(struct ip_set_req_version)) {
+			ret = -EINVAL;
+			goto done;
+		}
+
 		if (req_version->version != IPSET_PROTOCOL) {
 			ret = -EPROTO;
 			goto done;

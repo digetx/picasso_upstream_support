@@ -429,11 +429,20 @@ void __init dma_contiguous_remap(void)
 		map.type = MT_MEMORY_DMA_READY;
 
 		/*
-		 * Clear previous low-memory mapping
+		 * Clear previous low-memory mapping to ensure that the
+		 * TLB does not see any conflicting entries, then flush
+		 * the TLB of the old entries before creating new mappings.
+		 *
+		 * This ensures that any speculatively loaded TLB entries
+		 * (even though they may be rare) can not cause any problems,
+		 * and ensures that this code is architecturally compliant.
 		 */
 		for (addr = __phys_to_virt(start); addr < __phys_to_virt(end);
 		     addr += PMD_SIZE)
 			pmd_clear(pmd_off_k(addr));
+
+		flush_tlb_kernel_range(__phys_to_virt(start),
+				       __phys_to_virt(end));
 
 		iotable_init(&map, 1);
 	}
@@ -1232,7 +1241,8 @@ __iommu_create_mapping(struct device *dev, struct page **pages, size_t size)
 				break;
 
 		len = (j - i) << PAGE_SHIFT;
-		ret = iommu_map(mapping->domain, iova, phys, len, 0);
+		ret = iommu_map(mapping->domain, iova, phys, len,
+				IOMMU_READ|IOMMU_WRITE);
 		if (ret < 0)
 			goto fail;
 		iova += len;
@@ -1324,7 +1334,7 @@ static void *arm_iommu_alloc_attrs(struct device *dev, size_t size,
 	*handle = DMA_ERROR_CODE;
 	size = PAGE_ALIGN(size);
 
-	if (gfp & GFP_ATOMIC)
+	if (!(gfp & __GFP_WAIT))
 		return __iommu_alloc_atomic(dev, size, handle);
 
 	/*
@@ -1431,6 +1441,27 @@ static int arm_iommu_get_sgtable(struct device *dev, struct sg_table *sgt,
 					 GFP_KERNEL);
 }
 
+static int __dma_direction_to_prot(enum dma_data_direction dir)
+{
+	int prot;
+
+	switch (dir) {
+	case DMA_BIDIRECTIONAL:
+		prot = IOMMU_READ | IOMMU_WRITE;
+		break;
+	case DMA_TO_DEVICE:
+		prot = IOMMU_READ;
+		break;
+	case DMA_FROM_DEVICE:
+		prot = IOMMU_WRITE;
+		break;
+	default:
+		prot = 0;
+	}
+
+	return prot;
+}
+
 /*
  * Map a part of the scatter-gather list into contiguous io address space
  */
@@ -1444,6 +1475,7 @@ static int __map_sg_chunk(struct device *dev, struct scatterlist *sg,
 	int ret = 0;
 	unsigned int count;
 	struct scatterlist *s;
+	int prot;
 
 	size = PAGE_ALIGN(size);
 	*handle = DMA_ERROR_CODE;
@@ -1460,7 +1492,9 @@ static int __map_sg_chunk(struct device *dev, struct scatterlist *sg,
 			!dma_get_attr(DMA_ATTR_SKIP_CPU_SYNC, attrs))
 			__dma_page_cpu_to_dev(sg_page(s), s->offset, s->length, dir);
 
-		ret = iommu_map(mapping->domain, iova, phys, len, 0);
+		prot = __dma_direction_to_prot(dir);
+
+		ret = iommu_map(mapping->domain, iova, phys, len, prot);
 		if (ret < 0)
 			goto fail;
 		count += len >> PAGE_SHIFT;
@@ -1665,19 +1699,7 @@ static dma_addr_t arm_coherent_iommu_map_page(struct device *dev, struct page *p
 	if (dma_addr == DMA_ERROR_CODE)
 		return dma_addr;
 
-	switch (dir) {
-	case DMA_BIDIRECTIONAL:
-		prot = IOMMU_READ | IOMMU_WRITE;
-		break;
-	case DMA_TO_DEVICE:
-		prot = IOMMU_READ;
-		break;
-	case DMA_FROM_DEVICE:
-		prot = IOMMU_WRITE;
-		break;
-	default:
-		prot = 0;
-	}
+	prot = __dma_direction_to_prot(dir);
 
 	ret = iommu_map(mapping->domain, dma_addr, page_to_phys(page), len, prot);
 	if (ret < 0)

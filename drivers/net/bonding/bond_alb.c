@@ -694,7 +694,7 @@ static struct slave *rlb_choose_channel(struct sk_buff *skb, struct bonding *bon
 			client_info->ntt = 0;
 		}
 
-		if (!vlan_get_tag(skb, &client_info->vlan_id))
+		if (vlan_get_tag(skb, &client_info->vlan_id))
 			client_info->vlan_id = 0;
 
 		if (!client_info->assigned) {
@@ -1447,7 +1447,7 @@ int bond_alb_xmit(struct sk_buff *skb, struct net_device *bond_dev)
 	read_unlock(&bond->lock);
 	if (res) {
 		/* no suitable interface, frame not sent */
-		kfree_skb(skb);
+		dev_kfree_skb_any(skb);
 	}
 
 	return NETDEV_TX_OK;
@@ -1472,7 +1472,7 @@ void bond_alb_monitor(struct work_struct *work)
 	bond_info->lp_counter++;
 
 	/* send learning packets */
-	if (bond_info->lp_counter >= BOND_ALB_LP_TICKS) {
+	if (bond_info->lp_counter >= BOND_ALB_LP_TICKS(bond)) {
 		/* change of curr_active_slave involves swapping of mac addresses.
 		 * in order to avoid this swapping from happening while
 		 * sending the learning packets, the curr_slave_lock must be held for

@@ -498,7 +498,7 @@ struct cached_dev {
 	 */
 	atomic_t		has_dirty;
 
-	struct ratelimit	writeback_rate;
+	struct bch_ratelimit	writeback_rate;
 	struct delayed_work	writeback_rate_update;
 
 	/*
@@ -507,10 +507,9 @@ struct cached_dev {
 	 */
 	sector_t		last_read;
 
-	/* Number of writeback bios in flight */
-	atomic_t		in_flight;
+	/* Limit number of writeback bios in flight */
+	struct semaphore	in_flight;
 	struct closure_with_timer writeback;
-	struct closure_waitlist	writeback_wait;
 
 	struct keybuf		writeback_keys;
 
@@ -664,9 +663,13 @@ struct gc_stat {
  * CACHE_SET_STOPPING always gets set first when we're closing down a cache set;
  * we'll continue to run normally for awhile with CACHE_SET_STOPPING set (i.e.
  * flushing dirty data).
+ *
+ * CACHE_SET_RUNNING means all cache devices have been registered and journal
+ * replay is complete.
  */
 #define CACHE_SET_UNREGISTERING		0
 #define	CACHE_SET_STOPPING		1
+#define	CACHE_SET_RUNNING		2
 
 struct cache_set {
 	struct closure		cl;

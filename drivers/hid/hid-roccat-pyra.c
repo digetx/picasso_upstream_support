@@ -35,6 +35,8 @@ static struct class *pyra_class;
 static void profile_activated(struct pyra_device *pyra,
 		unsigned int new_profile)
 {
+	if (new_profile >= ARRAY_SIZE(pyra->profile_settings))
+		return;
 	pyra->actual_profile = new_profile;
 	pyra->actual_cpi = pyra->profile_settings[pyra->actual_profile].y_cpi;
 }
@@ -225,13 +227,13 @@ static ssize_t pyra_sysfs_read_profilex_buttons(struct file *fp,
 
 #define PROFILE_ATTR(number)						\
 static struct bin_attribute bin_attr_profile##number##_settings = {	\
-	.attr = { .name = "profile##number##_settings", .mode = 0440 },	\
+	.attr = { .name = "profile" #number "_settings", .mode = 0440 },	\
 	.size = PYRA_SIZE_PROFILE_SETTINGS,				\
 	.read = pyra_sysfs_read_profilex_settings,			\
 	.private = &profile_numbers[number-1],				\
 };									\
 static struct bin_attribute bin_attr_profile##number##_buttons = {	\
-	.attr = { .name = "profile##number##_buttons", .mode = 0440 },	\
+	.attr = { .name = "profile" #number "_buttons", .mode = 0440 },	\
 	.size = PYRA_SIZE_PROFILE_BUTTONS,				\
 	.read = pyra_sysfs_read_profilex_buttons,			\
 	.private = &profile_numbers[number-1],				\
@@ -257,9 +259,11 @@ static ssize_t pyra_sysfs_write_settings(struct file *fp,
 	if (off != 0 || count != PYRA_SIZE_SETTINGS)
 		return -EINVAL;
 
-	mutex_lock(&pyra->pyra_lock);
-
 	settings = (struct pyra_settings const *)buf;
+	if (settings->startup_profile >= ARRAY_SIZE(pyra->profile_settings))
+		return -EINVAL;
+
+	mutex_lock(&pyra->pyra_lock);
 
 	retval = pyra_set_settings(usb_dev, settings);
 	if (retval) {

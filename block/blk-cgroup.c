@@ -80,7 +80,7 @@ static struct blkcg_gq *blkg_alloc(struct blkcg *blkcg, struct request_queue *q,
 	blkg->q = q;
 	INIT_LIST_HEAD(&blkg->q_node);
 	blkg->blkcg = blkcg;
-	blkg->refcnt = 1;
+	atomic_set(&blkg->refcnt, 1);
 
 	/* root blkg uses @q->root_rl, init rl only for !root blkgs */
 	if (blkcg != &blkcg_root) {
@@ -235,8 +235,13 @@ static struct blkcg_gq *blkg_create(struct blkcg *blkcg,
 	blkg->online = true;
 	spin_unlock(&blkcg->lock);
 
-	if (!ret)
+	if (!ret) {
+		if (blkcg == &blkcg_root) {
+			q->root_blkg = blkg;
+			q->root_rl.blkg = blkg;
+		}
 		return blkg;
+	}
 
 	/* @blkg failed fully initialized, use the usual release path */
 	blkg_put(blkg);
@@ -335,6 +340,15 @@ static void blkg_destroy(struct blkcg_gq *blkg)
 		rcu_assign_pointer(blkcg->blkg_hint, NULL);
 
 	/*
+	 * If root blkg is destroyed.  Just clear the pointer since root_rl
+	 * does not take reference on root blkg.
+	 */
+	if (blkcg == &blkcg_root) {
+		blkg->q->root_blkg = NULL;
+		blkg->q->root_rl.blkg = NULL;
+	}
+
+	/*
 	 * Put the reference taken at the time of creation so that when all
 	 * queues are gone, group can be destroyed.
 	 */
@@ -360,13 +374,6 @@ static void blkg_destroy_all(struct request_queue *q)
 		blkg_destroy(blkg);
 		spin_unlock(&blkcg->lock);
 	}
-
-	/*
-	 * root blkg is destroyed.  Just clear the pointer since
-	 * root_rl does not take reference on root blkg.
-	 */
-	q->root_blkg = NULL;
-	q->root_rl.blkg = NULL;
 }
 
 /*
@@ -392,11 +399,8 @@ void __blkg_release_rcu(struct rcu_head *rcu_head)
 
 	/* release the blkcg and parent blkg refs this blkg has been holding */
 	css_put(&blkg->blkcg->css);
-	if (blkg->parent) {
-		spin_lock_irq(blkg->q->queue_lock);
+	if (blkg->parent)
 		blkg_put(blkg->parent);
-		spin_unlock_irq(blkg->q->queue_lock);
-	}
 
 	blkg_free(blkg);
 }
@@ -855,6 +859,20 @@ void blkcg_drain_queue(struct request_queue *q)
 {
 	lockdep_assert_held(q->queue_lock);
 
+	/*
+	 * @q could be exiting and already have destroyed all blkgs as
+	 * indicated by NULL root_blkg.  If so, don't confuse policies.
+	 */
+	if (!q->root_blkg)
+		return;
+
+	/*
+	 * @q could be exiting and already have destroyed all blkgs as
+	 * indicated by NULL root_blkg.  If so, don't confuse policies.
+	 */
+	if (!q->root_blkg)
+		return;
+
 	blk_throtl_drain(q);
 }
 
@@ -970,8 +988,6 @@ int blkcg_activate_policy(struct request_queue *q,
 		ret = PTR_ERR(blkg);
 		goto out_unlock;
 	}
-	q->root_blkg = blkg;
-	q->root_rl.blkg = blkg;
 
 	list_for_each_entry(blkg, &q->blkg_list, q_node)
 		cnt++;
