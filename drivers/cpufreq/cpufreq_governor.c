@@ -91,13 +91,13 @@ void dbs_check_cpu(struct dbs_data *dbs_data, int cpu)
 	unsigned int j;
 
 	if (dbs_data->cdata->governor == GOV_ONDEMAND)
-		ignore_nice = od_tuners->ignore_nice;
+		ignore_nice = od_tuners->ignore_nice_load;
 	else
-		ignore_nice = cs_tuners->ignore_nice;
+		ignore_nice = cs_tuners->ignore_nice_load;
 
 	policy = cdbs->cur_policy;
 
-	/* Get Absolute Load (in terms of freq for ondemand gov) */
+	/* Get Absolute Load */
 	for_each_cpu(j, policy->cpus) {
 		struct cpu_dbs_common_info *j_cdbs;
 		u64 cur_wall_time, cur_idle_time;
@@ -148,14 +148,6 @@ void dbs_check_cpu(struct dbs_data *dbs_data, int cpu)
 
 		load = 100 * (wall_time - idle_time) / wall_time;
 
-		if (dbs_data->cdata->governor == GOV_ONDEMAND) {
-			int freq_avg = __cpufreq_driver_getavg(policy, j);
-			if (freq_avg <= 0)
-				freq_avg = policy->cur;
-
-			load *= freq_avg;
-		}
-
 		if (load > max_load)
 			max_load = load;
 	}
@@ -176,6 +168,9 @@ void gov_queue_work(struct dbs_data *dbs_data, struct cpufreq_policy *policy,
 		unsigned int delay, bool all_cpus)
 {
 	int i;
+
+	if (!policy->governor_enabled)
+		return;
 
 	if (!all_cpus) {
 		__gov_queue_work(smp_processor_id(), dbs_data, delay);
@@ -255,6 +250,7 @@ int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 		if (have_governor_per_policy()) {
 			WARN_ON(dbs_data);
 		} else if (dbs_data) {
+			dbs_data->usage_count++;
 			policy->governor_data = dbs_data;
 			return 0;
 		}
@@ -266,6 +262,7 @@ int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 		}
 
 		dbs_data->cdata = cdata;
+		dbs_data->usage_count = 1;
 		rc = cdata->init(dbs_data);
 		if (rc) {
 			pr_err("%s: POLICY_INIT: init() failed\n", __func__);
@@ -294,7 +291,8 @@ int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 		set_sampling_rate(dbs_data, max(dbs_data->min_sampling_rate,
 					latency * LATENCY_MULTIPLIER));
 
-		if (dbs_data->cdata->governor == GOV_CONSERVATIVE) {
+		if ((cdata->governor == GOV_CONSERVATIVE) &&
+				(!policy->governor->initialized)) {
 			struct cs_ops *cs_ops = dbs_data->cdata->gov_ops;
 
 			cpufreq_register_notifier(cs_ops->notifier_block,
@@ -306,12 +304,12 @@ int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 
 		return 0;
 	case CPUFREQ_GOV_POLICY_EXIT:
-		if ((policy->governor->initialized == 1) ||
-				have_governor_per_policy()) {
+		if (!--dbs_data->usage_count) {
 			sysfs_remove_group(get_governor_parent_kobj(policy),
 					get_sysfs_attr(dbs_data));
 
-			if (dbs_data->cdata->governor == GOV_CONSERVATIVE) {
+			if ((dbs_data->cdata->governor == GOV_CONSERVATIVE) &&
+				(policy->governor->initialized == 1)) {
 				struct cs_ops *cs_ops = dbs_data->cdata->gov_ops;
 
 				cpufreq_unregister_notifier(cs_ops->notifier_block,
@@ -333,12 +331,12 @@ int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 		cs_tuners = dbs_data->tuners;
 		cs_dbs_info = dbs_data->cdata->get_cpu_dbs_info_s(cpu);
 		sampling_rate = cs_tuners->sampling_rate;
-		ignore_nice = cs_tuners->ignore_nice;
+		ignore_nice = cs_tuners->ignore_nice_load;
 	} else {
 		od_tuners = dbs_data->tuners;
 		od_dbs_info = dbs_data->cdata->get_cpu_dbs_info_s(cpu);
 		sampling_rate = od_tuners->sampling_rate;
-		ignore_nice = od_tuners->ignore_nice;
+		ignore_nice = od_tuners->ignore_nice_load;
 		od_ops = dbs_data->cdata->gov_ops;
 		io_busy = od_tuners->io_is_busy;
 	}

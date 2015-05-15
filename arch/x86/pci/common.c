@@ -448,6 +448,22 @@ static const struct dmi_system_id pciprobe_dmi_table[] = {
 			DMI_MATCH(DMI_PRODUCT_NAME, "ftServer"),
 		},
 	},
+        {
+                .callback = set_scan_all,
+                .ident = "Stratus/NEC ftServer",
+                .matches = {
+                        DMI_MATCH(DMI_SYS_VENDOR, "NEC"),
+                        DMI_MATCH(DMI_PRODUCT_NAME, "Express5800/R32"),
+                },
+        },
+        {
+                .callback = set_scan_all,
+                .ident = "Stratus/NEC ftServer",
+                .matches = {
+                        DMI_MATCH(DMI_SYS_VENDOR, "NEC"),
+                        DMI_MATCH(DMI_PRODUCT_NAME, "Express5800/R31"),
+                },
+        },
 	{}
 };
 
@@ -628,7 +644,9 @@ int pcibios_add_device(struct pci_dev *dev)
 
 	pa_data = boot_params.hdr.setup_data;
 	while (pa_data) {
-		data = phys_to_virt(pa_data);
+		data = ioremap(pa_data, sizeof(*rom));
+		if (!data)
+			return -ENOMEM;
 
 		if (data->type == SETUP_PCI) {
 			rom = (struct pci_setup_rom *)data;
@@ -645,6 +663,7 @@ int pcibios_add_device(struct pci_dev *dev)
 			}
 		}
 		pa_data = data->next;
+		iounmap(data);
 	}
 	return 0;
 }

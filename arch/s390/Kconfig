@@ -98,7 +98,6 @@ config S390
 	select CLONE_BACKWARDS2
 	select GENERIC_CLOCKEVENTS
 	select GENERIC_CPU_DEVICES if !SMP
-	select GENERIC_KERNEL_THREAD
 	select GENERIC_SMP_IDLE_THREAD
 	select GENERIC_TIME_VSYSCALL_OLD
 	select HAVE_ALIGNED_STRUCT_PAGE if SLUB
@@ -117,6 +116,7 @@ config S390
 	select HAVE_FUNCTION_GRAPH_TRACER
 	select HAVE_FUNCTION_TRACER
 	select HAVE_FUNCTION_TRACE_MCOUNT_TEST
+	select HAVE_FUTEX_CMPXCHG if FUTEX
 	select HAVE_KERNEL_BZIP2
 	select HAVE_KERNEL_GZIP
 	select HAVE_KERNEL_LZMA
@@ -228,11 +228,12 @@ config MARCH_Z196
 	  not work on older machines.
 
 config MARCH_ZEC12
-	bool "IBM zEC12"
+	bool "IBM zBC12 and zEC12"
 	select HAVE_MARCH_ZEC12_FEATURES if 64BIT
 	help
-	  Select this to enable optimizations for IBM zEC12 (2827 series). The
-	  kernel will be slightly faster but will not work on older machines.
+	  Select this to enable optimizations for IBM zBC12 and zEC12 (2828 and
+	  2827 series). The kernel will be slightly faster but will not work on
+	  older machines.
 
 endchoice
 

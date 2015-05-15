@@ -123,54 +123,6 @@ int radeon_uvd_init(struct radeon_device *rdev)
 		return r;
 	}
 
-	r = radeon_uvd_resume(rdev);
-	if (r)
-		return r;
-
-	memset(rdev->uvd.cpu_addr, 0, bo_size);
-	memcpy(rdev->uvd.cpu_addr, rdev->uvd_fw->data, rdev->uvd_fw->size);
-
-	r = radeon_uvd_suspend(rdev);
-	if (r)
-		return r;
-
-	for (i = 0; i < RADEON_MAX_UVD_HANDLES; ++i) {
-		atomic_set(&rdev->uvd.handles[i], 0);
-		rdev->uvd.filp[i] = NULL;
-	}
-
-	return 0;
-}
-
-void radeon_uvd_fini(struct radeon_device *rdev)
-{
-	radeon_uvd_suspend(rdev);
-	radeon_bo_unref(&rdev->uvd.vcpu_bo);
-}
-
-int radeon_uvd_suspend(struct radeon_device *rdev)
-{
-	int r;
-
-	if (rdev->uvd.vcpu_bo == NULL)
-		return 0;
-
-	r = radeon_bo_reserve(rdev->uvd.vcpu_bo, false);
-	if (!r) {
-		radeon_bo_kunmap(rdev->uvd.vcpu_bo);
-		radeon_bo_unpin(rdev->uvd.vcpu_bo);
-		radeon_bo_unreserve(rdev->uvd.vcpu_bo);
-	}
-	return r;
-}
-
-int radeon_uvd_resume(struct radeon_device *rdev)
-{
-	int r;
-
-	if (rdev->uvd.vcpu_bo == NULL)
-		return -EINVAL;
-
 	r = radeon_bo_reserve(rdev->uvd.vcpu_bo, false);
 	if (r) {
 		radeon_bo_unref(&rdev->uvd.vcpu_bo);
@@ -195,6 +147,84 @@ int radeon_uvd_resume(struct radeon_device *rdev)
 
 	radeon_bo_unreserve(rdev->uvd.vcpu_bo);
 
+	for (i = 0; i < RADEON_MAX_UVD_HANDLES; ++i) {
+		atomic_set(&rdev->uvd.handles[i], 0);
+		rdev->uvd.filp[i] = NULL;
+	}
+
+	return 0;
+}
+
+void radeon_uvd_fini(struct radeon_device *rdev)
+{
+	int r;
+
+	if (rdev->uvd.vcpu_bo == NULL)
+		return;
+
+	r = radeon_bo_reserve(rdev->uvd.vcpu_bo, false);
+	if (!r) {
+		radeon_bo_kunmap(rdev->uvd.vcpu_bo);
+		radeon_bo_unpin(rdev->uvd.vcpu_bo);
+		radeon_bo_unreserve(rdev->uvd.vcpu_bo);
+	}
+
+	radeon_bo_unref(&rdev->uvd.vcpu_bo);
+
+	release_firmware(rdev->uvd_fw);
+}
+
+int radeon_uvd_suspend(struct radeon_device *rdev)
+{
+	unsigned size;
+	void *ptr;
+	int i;
+
+	if (rdev->uvd.vcpu_bo == NULL)
+		return 0;
+
+	for (i = 0; i < RADEON_MAX_UVD_HANDLES; ++i)
+		if (atomic_read(&rdev->uvd.handles[i]))
+			break;
+
+	if (i == RADEON_MAX_UVD_HANDLES)
+		return 0;
+
+	size = radeon_bo_size(rdev->uvd.vcpu_bo);
+	size -= rdev->uvd_fw->size;
+
+	ptr = rdev->uvd.cpu_addr;
+	ptr += rdev->uvd_fw->size;
+
+	rdev->uvd.saved_bo = kmalloc(size, GFP_KERNEL);
+	memcpy(rdev->uvd.saved_bo, ptr, size);
+
+	return 0;
+}
+
+int radeon_uvd_resume(struct radeon_device *rdev)
+{
+	unsigned size;
+	void *ptr;
+
+	if (rdev->uvd.vcpu_bo == NULL)
+		return -EINVAL;
+
+	memcpy(rdev->uvd.cpu_addr, rdev->uvd_fw->data, rdev->uvd_fw->size);
+
+	size = radeon_bo_size(rdev->uvd.vcpu_bo);
+	size -= rdev->uvd_fw->size;
+
+	ptr = rdev->uvd.cpu_addr;
+	ptr += rdev->uvd_fw->size;
+
+	if (rdev->uvd.saved_bo != NULL) {
+		memcpy(ptr, rdev->uvd.saved_bo, size);
+		kfree(rdev->uvd.saved_bo);
+		rdev->uvd.saved_bo = NULL;
+	} else
+		memset(ptr, 0, size);
+
 	return 0;
 }
 
@@ -208,9 +238,11 @@ void radeon_uvd_free_handles(struct radeon_device *rdev, struct drm_file *filp)
 {
 	int i, r;
 	for (i = 0; i < RADEON_MAX_UVD_HANDLES; ++i) {
-		if (rdev->uvd.filp[i] == filp) {
-			uint32_t handle = atomic_read(&rdev->uvd.handles[i]);
+		uint32_t handle = atomic_read(&rdev->uvd.handles[i]);
+		if (handle != 0 && rdev->uvd.filp[i] == filp) {
 			struct radeon_fence *fence;
+
+			radeon_uvd_note_usage(rdev);
 
 			r = radeon_uvd_get_destroy_msg(rdev,
 				R600_RING_TYPE_UVD_INDEX, handle, &fence);
@@ -329,6 +361,14 @@ static int radeon_uvd_cs_msg(struct radeon_cs_parser *p, struct radeon_bo *bo,
 		return -EINVAL;
 	}
 
+	if (bo->tbo.sync_obj) {
+		r = radeon_fence_wait(bo->tbo.sync_obj, false);
+		if (r) {
+			DRM_ERROR("Failed waiting for UVD message (%d)!\n", r);
+			return r;
+		}
+	}
+
 	r = radeon_bo_kmap(bo, &ptr);
 	if (r)
 		return r;
@@ -409,6 +449,10 @@ static int radeon_uvd_cs_reloc(struct radeon_cs_parser *p,
 	cmd = radeon_get_ib_value(p, p->idx) >> 1;
 
 	if (cmd < 0x4) {
+		if (end <= start) {
+			DRM_ERROR("invalid reloc offset %X!\n", offset);
+			return -EINVAL;
+		}
 		if ((end - start) < buf_sizes[cmd]) {
 			DRM_ERROR("buffer to small (%d / %d)!\n",
 				  (unsigned)(end - start), buf_sizes[cmd]);
@@ -420,7 +464,7 @@ static int radeon_uvd_cs_reloc(struct radeon_cs_parser *p,
 		return -EINVAL;
 	}
 
-	if ((start >> 28) != (end >> 28)) {
+	if ((start >> 28) != ((end - 1) >> 28)) {
 		DRM_ERROR("reloc %LX-%LX crossing 256MB boundary!\n",
 			  start, end);
 		return -EINVAL;
@@ -613,19 +657,19 @@ int radeon_uvd_get_create_msg(struct radeon_device *rdev, int ring,
 	}
 
 	/* stitch together an UVD create msg */
-	msg[0] = 0x00000de4;
-	msg[1] = 0x00000000;
-	msg[2] = handle;
-	msg[3] = 0x00000000;
-	msg[4] = 0x00000000;
-	msg[5] = 0x00000000;
-	msg[6] = 0x00000000;
-	msg[7] = 0x00000780;
-	msg[8] = 0x00000440;
-	msg[9] = 0x00000000;
-	msg[10] = 0x01b37000;
+	msg[0] = cpu_to_le32(0x00000de4);
+	msg[1] = cpu_to_le32(0x00000000);
+	msg[2] = cpu_to_le32(handle);
+	msg[3] = cpu_to_le32(0x00000000);
+	msg[4] = cpu_to_le32(0x00000000);
+	msg[5] = cpu_to_le32(0x00000000);
+	msg[6] = cpu_to_le32(0x00000000);
+	msg[7] = cpu_to_le32(0x00000780);
+	msg[8] = cpu_to_le32(0x00000440);
+	msg[9] = cpu_to_le32(0x00000000);
+	msg[10] = cpu_to_le32(0x01b37000);
 	for (i = 11; i < 1024; ++i)
-		msg[i] = 0x0;
+		msg[i] = cpu_to_le32(0x0);
 
 	radeon_bo_kunmap(bo);
 	radeon_bo_unreserve(bo);
@@ -659,12 +703,12 @@ int radeon_uvd_get_destroy_msg(struct radeon_device *rdev, int ring,
 	}
 
 	/* stitch together an UVD destroy msg */
-	msg[0] = 0x00000de4;
-	msg[1] = 0x00000002;
-	msg[2] = handle;
-	msg[3] = 0x00000000;
+	msg[0] = cpu_to_le32(0x00000de4);
+	msg[1] = cpu_to_le32(0x00000002);
+	msg[2] = cpu_to_le32(handle);
+	msg[3] = cpu_to_le32(0x00000000);
 	for (i = 4; i < 1024; ++i)
-		msg[i] = 0x0;
+		msg[i] = cpu_to_le32(0x0);
 
 	radeon_bo_kunmap(bo);
 	radeon_bo_unreserve(bo);

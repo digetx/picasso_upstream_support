@@ -1440,9 +1440,9 @@ struct ipr_ioa_cfg {
 	/*
 	 * Bitmaps for SIS64 generated target values
 	 */
-	unsigned long *target_ids;
-	unsigned long *array_ids;
-	unsigned long *vset_ids;
+	unsigned long target_ids[BITS_TO_LONGS(IPR_MAX_SIS64_DEVS)];
+	unsigned long array_ids[BITS_TO_LONGS(IPR_MAX_SIS64_DEVS)];
+	unsigned long vset_ids[BITS_TO_LONGS(IPR_MAX_SIS64_DEVS)];
 
 	u16 type; /* CCIN of the card */
 
@@ -1578,6 +1578,7 @@ struct ipr_cmnd {
 		struct scsi_device *sdev;
 	} u;
 
+	struct completion *eh_comp;
 	struct ipr_hrr_queue *hrrq;
 	struct ipr_ioa_cfg *ioa_cfg;
 };

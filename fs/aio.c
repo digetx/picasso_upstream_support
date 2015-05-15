@@ -141,9 +141,6 @@ static void aio_free_ring(struct kioctx *ctx)
 	for (i = 0; i < ctx->nr_pages; i++)
 		put_page(ctx->ring_pages[i]);
 
-	if (ctx->mmap_size)
-		vm_munmap(ctx->mmap_base, ctx->mmap_size);
-
 	if (ctx->ring_pages && ctx->ring_pages != ctx->internal_pages)
 		kfree(ctx->ring_pages);
 }
@@ -307,11 +304,12 @@ static void free_ioctx(struct kioctx *ctx)
 	kunmap_atomic(ring);
 
 	while (atomic_read(&ctx->reqs_active) > 0) {
-		wait_event(ctx->wait, head != ctx->tail);
+		wait_event(ctx->wait,
+				head != ctx->tail ||
+				atomic_read(&ctx->reqs_active) <= 0);
 
 		avail = (head <= ctx->tail ? ctx->tail : ctx->nr_events) - head;
 
-		atomic_sub(avail, &ctx->reqs_active);
 		head += avail;
 		head %= ctx->nr_events;
 	}
@@ -319,11 +317,6 @@ static void free_ioctx(struct kioctx *ctx)
 	WARN_ON(atomic_read(&ctx->reqs_active) < 0);
 
 	aio_free_ring(ctx);
-
-	spin_lock(&aio_nr_lock);
-	BUG_ON(aio_nr - ctx->max_reqs > aio_nr);
-	aio_nr -= ctx->max_reqs;
-	spin_unlock(&aio_nr_lock);
 
 	pr_debug("freeing %p\n", ctx);
 
@@ -429,21 +422,30 @@ static void kill_ioctx_rcu(struct rcu_head *head)
  *	when the processes owning a context have all exited to encourage
  *	the rapid destruction of the kioctx.
  */
-static void kill_ioctx(struct kioctx *ctx)
+static void kill_ioctx(struct mm_struct *mm, struct kioctx *ctx)
 {
 	if (!atomic_xchg(&ctx->dead, 1)) {
+		spin_lock(&mm->ioctx_lock);
 		hlist_del_rcu(&ctx->list);
-		/* Between hlist_del_rcu() and dropping the initial ref */
-		synchronize_rcu();
+		spin_unlock(&mm->ioctx_lock);
 
 		/*
-		 * We can't punt to workqueue here because put_ioctx() ->
-		 * free_ioctx() will unmap the ringbuffer, and that has to be
-		 * done in the original process's context. kill_ioctx_rcu/work()
-		 * exist for exit_aio(), as in that path free_ioctx() won't do
-		 * the unmap.
+		 * It'd be more correct to do this in free_ioctx(), after all
+		 * the outstanding kiocbs have finished - but by then io_destroy
+		 * has already returned, so io_setup() could potentially return
+		 * -EAGAIN with no ioctxs actually in use (as far as userspace
+		 *  could tell).
 		 */
-		kill_ioctx_work(&ctx->rcu_work);
+		spin_lock(&aio_nr_lock);
+		BUG_ON(aio_nr - ctx->max_reqs > aio_nr);
+		aio_nr -= ctx->max_reqs;
+		spin_unlock(&aio_nr_lock);
+
+		if (ctx->mmap_size)
+			vm_munmap(ctx->mmap_base, ctx->mmap_size);
+
+		/* Between hlist_del_rcu() and dropping the initial ref */
+		call_rcu(&ctx->rcu_head, kill_ioctx_rcu);
 	}
 }
 
@@ -493,10 +495,7 @@ void exit_aio(struct mm_struct *mm)
 		 */
 		ctx->mmap_size = 0;
 
-		if (!atomic_xchg(&ctx->dead, 1)) {
-			hlist_del_rcu(&ctx->list);
-			call_rcu(&ctx->rcu_head, kill_ioctx_rcu);
-		}
+		kill_ioctx(mm, ctx);
 	}
 }
 
@@ -678,6 +677,7 @@ void aio_complete(struct kiocb *iocb, long res, long res2)
 put_rq:
 	/* everything turned out well, dispose of the aiocb. */
 	aio_put_req(iocb);
+	atomic_dec(&ctx->reqs_active);
 
 	/*
 	 * We have to order our ring_info tail store above and test
@@ -717,6 +717,8 @@ static long aio_read_events_ring(struct kioctx *ctx,
 	if (head == ctx->tail)
 		goto out;
 
+	head %= ctx->nr_events;
+
 	while (ret < nr) {
 		long avail;
 		struct io_event *ev;
@@ -755,8 +757,6 @@ static long aio_read_events_ring(struct kioctx *ctx,
 	flush_dcache_page(ctx->ring_pages[0]);
 
 	pr_debug("%li  h%u t%u\n", ret, head, ctx->tail);
-
-	atomic_sub(ret, &ctx->reqs_active);
 out:
 	mutex_unlock(&ctx->ring_lock);
 
@@ -854,7 +854,7 @@ SYSCALL_DEFINE2(io_setup, unsigned, nr_events, aio_context_t __user *, ctxp)
 	if (!IS_ERR(ioctx)) {
 		ret = put_user(ioctx->user_id, ctxp);
 		if (ret)
-			kill_ioctx(ioctx);
+			kill_ioctx(current->mm, ioctx);
 		put_ioctx(ioctx);
 	}
 
@@ -872,7 +872,7 @@ SYSCALL_DEFINE1(io_destroy, aio_context_t, ctx)
 {
 	struct kioctx *ioctx = lookup_ioctx(ctx);
 	if (likely(NULL != ioctx)) {
-		kill_ioctx(ioctx);
+		kill_ioctx(current->mm, ioctx);
 		put_ioctx(ioctx);
 		return 0;
 	}
@@ -1299,8 +1299,7 @@ SYSCALL_DEFINE3(io_cancel, aio_context_t, ctx_id, struct iocb __user *, iocb,
  *	< min_nr if the timeout specified by timeout has elapsed
  *	before sufficient events are available, where timeout == NULL
  *	specifies an infinite timeout. Note that the timeout pointed to by
- *	timeout is relative and will be updated if not NULL and the
- *	operation blocks. Will fail with -ENOSYS if not implemented.
+ *	timeout is relative.  Will fail with -ENOSYS if not implemented.
  */
 SYSCALL_DEFINE5(io_getevents, aio_context_t, ctx_id,
 		long, min_nr,

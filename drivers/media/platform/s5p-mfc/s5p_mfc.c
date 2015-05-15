@@ -177,21 +177,6 @@ unlock:
 		mutex_unlock(&dev->mfc_mutex);
 }
 
-static enum s5p_mfc_node_type s5p_mfc_get_node_type(struct file *file)
-{
-	struct video_device *vdev = video_devdata(file);
-
-	if (!vdev) {
-		mfc_err("failed to get video_device");
-		return MFCNODE_INVALID;
-	}
-	if (vdev->index == 0)
-		return MFCNODE_DECODER;
-	else if (vdev->index == 1)
-		return MFCNODE_ENCODER;
-	return MFCNODE_INVALID;
-}
-
 static void s5p_mfc_clear_int_flags(struct s5p_mfc_dev *dev)
 {
 	mfc_write(dev, 0, S5P_FIMV_RISC_HOST_INT);
@@ -397,7 +382,7 @@ static void s5p_mfc_handle_frame(struct s5p_mfc_ctx *ctx,
 leave_handle_frame:
 	spin_unlock_irqrestore(&dev->irqlock, flags);
 	if ((ctx->src_queue_cnt == 0 && ctx->state != MFCINST_FINISHING)
-				    || ctx->dst_queue_cnt < ctx->dpb_count)
+				    || ctx->dst_queue_cnt < ctx->pb_count)
 		clear_work_bit(ctx);
 	s5p_mfc_hw_call(dev->mfc_ops, clear_int_flags, dev);
 	wake_up_ctx(ctx, reason, err);
@@ -473,7 +458,7 @@ static void s5p_mfc_handle_seq_done(struct s5p_mfc_ctx *ctx,
 
 		s5p_mfc_hw_call(dev->mfc_ops, dec_calc_dpb_size, ctx);
 
-		ctx->dpb_count = s5p_mfc_hw_call(dev->mfc_ops, get_dpb_count,
+		ctx->pb_count = s5p_mfc_hw_call(dev->mfc_ops, get_dpb_count,
 				dev);
 		ctx->mv_count = s5p_mfc_hw_call(dev->mfc_ops, get_mv_count,
 				dev);
@@ -562,7 +547,7 @@ static void s5p_mfc_handle_stream_complete(struct s5p_mfc_ctx *ctx,
 	struct s5p_mfc_dev *dev = ctx->dev;
 	struct s5p_mfc_buf *mb_entry;
 
-	mfc_debug(2, "Stream completed");
+	mfc_debug(2, "Stream completed\n");
 
 	s5p_mfc_clear_int_flags(dev);
 	ctx->int_type = reason;
@@ -701,6 +686,7 @@ irq_cleanup_hw:
 /* Open an MFC node */
 static int s5p_mfc_open(struct file *file)
 {
+	struct video_device *vdev = video_devdata(file);
 	struct s5p_mfc_dev *dev = video_drvdata(file);
 	struct s5p_mfc_ctx *ctx = NULL;
 	struct vb2_queue *q;
@@ -738,7 +724,7 @@ static int s5p_mfc_open(struct file *file)
 	/* Mark context as idle */
 	clear_work_bit_irqsave(ctx);
 	dev->ctx[ctx->num] = ctx;
-	if (s5p_mfc_get_node_type(file) == MFCNODE_DECODER) {
+	if (vdev == dev->vfd_dec) {
 		ctx->type = MFCINST_DECODER;
 		ctx->c_ops = get_dec_codec_ops();
 		s5p_mfc_dec_init(ctx);
@@ -748,7 +734,7 @@ static int s5p_mfc_open(struct file *file)
 			mfc_err("Failed to setup mfc controls\n");
 			goto err_ctrls_setup;
 		}
-	} else if (s5p_mfc_get_node_type(file) == MFCNODE_ENCODER) {
+	} else if (vdev == dev->vfd_enc) {
 		ctx->type = MFCINST_ENCODER;
 		ctx->c_ops = get_enc_codec_ops();
 		/* only for encoder */
@@ -793,10 +779,10 @@ static int s5p_mfc_open(struct file *file)
 	q = &ctx->vq_dst;
 	q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 	q->drv_priv = &ctx->fh;
-	if (s5p_mfc_get_node_type(file) == MFCNODE_DECODER) {
+	if (vdev == dev->vfd_dec) {
 		q->io_modes = VB2_MMAP;
 		q->ops = get_dec_queue_ops();
-	} else if (s5p_mfc_get_node_type(file) == MFCNODE_ENCODER) {
+	} else if (vdev == dev->vfd_enc) {
 		q->io_modes = VB2_MMAP | VB2_USERPTR;
 		q->ops = get_enc_queue_ops();
 	} else {
@@ -815,10 +801,10 @@ static int s5p_mfc_open(struct file *file)
 	q->type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
 	q->io_modes = VB2_MMAP;
 	q->drv_priv = &ctx->fh;
-	if (s5p_mfc_get_node_type(file) == MFCNODE_DECODER) {
+	if (vdev == dev->vfd_dec) {
 		q->io_modes = VB2_MMAP;
 		q->ops = get_dec_queue_ops();
-	} else if (s5p_mfc_get_node_type(file) == MFCNODE_ENCODER) {
+	} else if (vdev == dev->vfd_enc) {
 		q->io_modes = VB2_MMAP | VB2_USERPTR;
 		q->ops = get_enc_queue_ops();
 	} else {
@@ -1362,7 +1348,6 @@ static struct s5p_mfc_variant mfc_drvdata_v5 = {
 	.port_num	= MFC_NUM_PORTS,
 	.buf_size	= &buf_size_v5,
 	.buf_align	= &mfc_buf_align_v5,
-	.mclk_name	= "sclk_mfc",
 	.fw_name	= "s5p-mfc.fw",
 };
 
@@ -1389,7 +1374,6 @@ static struct s5p_mfc_variant mfc_drvdata_v6 = {
 	.port_num	= MFC_NUM_PORTS_V6,
 	.buf_size	= &buf_size_v6,
 	.buf_align	= &mfc_buf_align_v6,
-	.mclk_name      = "aclk_333",
 	.fw_name        = "s5p-mfc-v6.fw",
 };
 

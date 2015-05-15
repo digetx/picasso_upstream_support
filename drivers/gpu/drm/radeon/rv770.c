@@ -744,10 +744,10 @@ static void rv770_init_golden_registers(struct radeon_device *rdev)
 						 (const u32)ARRAY_SIZE(r7xx_golden_dyn_gpr_registers));
 		radeon_program_register_sequence(rdev,
 						 rv730_golden_registers,
-						 (const u32)ARRAY_SIZE(rv770_golden_registers));
+						 (const u32)ARRAY_SIZE(rv730_golden_registers));
 		radeon_program_register_sequence(rdev,
 						 rv730_mgcg_init,
-						 (const u32)ARRAY_SIZE(rv770_mgcg_init));
+						 (const u32)ARRAY_SIZE(rv730_mgcg_init));
 		break;
 	case CHIP_RV710:
 		radeon_program_register_sequence(rdev,
@@ -758,18 +758,18 @@ static void rv770_init_golden_registers(struct radeon_device *rdev)
 						 (const u32)ARRAY_SIZE(r7xx_golden_dyn_gpr_registers));
 		radeon_program_register_sequence(rdev,
 						 rv710_golden_registers,
-						 (const u32)ARRAY_SIZE(rv770_golden_registers));
+						 (const u32)ARRAY_SIZE(rv710_golden_registers));
 		radeon_program_register_sequence(rdev,
 						 rv710_mgcg_init,
-						 (const u32)ARRAY_SIZE(rv770_mgcg_init));
+						 (const u32)ARRAY_SIZE(rv710_mgcg_init));
 		break;
 	case CHIP_RV740:
 		radeon_program_register_sequence(rdev,
 						 rv740_golden_registers,
-						 (const u32)ARRAY_SIZE(rv770_golden_registers));
+						 (const u32)ARRAY_SIZE(rv740_golden_registers));
 		radeon_program_register_sequence(rdev,
 						 rv740_mgcg_init,
-						 (const u32)ARRAY_SIZE(rv770_mgcg_init));
+						 (const u32)ARRAY_SIZE(rv740_mgcg_init));
 		break;
 	default:
 		break;
@@ -862,10 +862,8 @@ int rv770_uvd_resume(struct radeon_device *rdev)
 		chip_id = 0x0100000b;
 		break;
 	case CHIP_SUMO:
-		chip_id = 0x0100000c;
-		break;
 	case CHIP_SUMO2:
-		chip_id = 0x0100000d;
+		chip_id = 0x0100000c;
 		break;
 	case CHIP_PALM:
 		chip_id = 0x0100000e;
@@ -1831,6 +1829,8 @@ static int rv770_startup(struct radeon_device *rdev)
 	/* enable pcie gen2 link */
 	rv770_pcie_gen2_enable(rdev);
 
+	rv770_mc_program(rdev);
+
 	if (!rdev->me_fw || !rdev->pfp_fw || !rdev->rlc_fw) {
 		r = r600_init_microcode(rdev);
 		if (r) {
@@ -1843,7 +1843,6 @@ static int rv770_startup(struct radeon_device *rdev)
 	if (r)
 		return r;
 
-	rv770_mc_program(rdev);
 	if (rdev->flags & RADEON_IS_AGP) {
 		rv770_agp_enable(rdev);
 	} else {
@@ -1889,6 +1888,12 @@ static int rv770_startup(struct radeon_device *rdev)
 		rdev->ring[R600_RING_TYPE_UVD_INDEX].ring_size = 0;
 
 	/* Enable IRQ */
+	if (!rdev->irq.installed) {
+		r = radeon_irq_kms_init(rdev);
+		if (r)
+			return r;
+	}
+
 	r = r600_irq_init(rdev);
 	if (r) {
 		DRM_ERROR("radeon: IH init failed (%d).\n", r);
@@ -1979,6 +1984,7 @@ int rv770_resume(struct radeon_device *rdev)
 int rv770_suspend(struct radeon_device *rdev)
 {
 	r600_audio_fini(rdev);
+	r600_uvd_stop(rdev);
 	radeon_uvd_suspend(rdev);
 	r700_cp_stop(rdev);
 	r600_dma_stop(rdev);
@@ -2047,10 +2053,6 @@ int rv770_init(struct radeon_device *rdev)
 	if (r)
 		return r;
 
-	r = radeon_irq_kms_init(rdev);
-	if (r)
-		return r;
-
 	rdev->ring[RADEON_RING_TYPE_GFX_INDEX].ring_obj = NULL;
 	r600_ring_init(rdev, &rdev->ring[RADEON_RING_TYPE_GFX_INDEX], 1024 * 1024);
 
@@ -2098,6 +2100,7 @@ void rv770_fini(struct radeon_device *rdev)
 	radeon_ib_pool_fini(rdev);
 	radeon_irq_kms_fini(rdev);
 	rv770_pcie_gart_fini(rdev);
+	r600_uvd_stop(rdev);
 	radeon_uvd_fini(rdev);
 	r600_vram_scratch_fini(rdev);
 	radeon_gem_fini(rdev);
@@ -2113,8 +2116,6 @@ static void rv770_pcie_gen2_enable(struct radeon_device *rdev)
 {
 	u32 link_width_cntl, lanes, speed_cntl, tmp;
 	u16 link_cntl2;
-	u32 mask;
-	int ret;
 
 	if (radeon_pcie_gen2 == 0)
 		return;
@@ -2129,11 +2130,8 @@ static void rv770_pcie_gen2_enable(struct radeon_device *rdev)
 	if (ASIC_IS_X2(rdev))
 		return;
 
-	ret = drm_pcie_get_speed_cap_mask(rdev->ddev, &mask);
-	if (ret != 0)
-		return;
-
-	if (!(mask & DRM_PCIE_SPEED_50))
+	if ((rdev->pdev->bus->max_bus_speed != PCIE_SPEED_5_0GT) &&
+		(rdev->pdev->bus->max_bus_speed != PCIE_SPEED_8_0GT))
 		return;
 
 	DRM_INFO("enabling PCIE gen 2 link speeds, disable with radeon.pcie_gen2=0\n");

@@ -347,6 +347,8 @@ extern bool r600_gui_idle(struct radeon_device *rdev);
 extern void r600_pm_misc(struct radeon_device *rdev);
 extern void r600_pm_init_profile(struct radeon_device *rdev);
 extern void rs780_pm_init_profile(struct radeon_device *rdev);
+extern uint32_t rs780_mc_rreg(struct radeon_device *rdev, uint32_t reg);
+extern void rs780_mc_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v);
 extern void r600_pm_get_dynpm_state(struct radeon_device *rdev);
 extern void r600_set_pcie_lanes(struct radeon_device *rdev, int lanes);
 extern int r600_get_pcie_lanes(struct radeon_device *rdev);
@@ -397,7 +399,7 @@ uint64_t r600_get_gpu_clock_counter(struct radeon_device *rdev);
 /* uvd */
 int r600_uvd_init(struct radeon_device *rdev);
 int r600_uvd_rbc_start(struct radeon_device *rdev);
-void r600_uvd_rbc_stop(struct radeon_device *rdev);
+void r600_uvd_stop(struct radeon_device *rdev);
 int r600_uvd_ib_test(struct radeon_device *rdev, struct radeon_ring *ring);
 void r600_uvd_fence_emit(struct radeon_device *rdev,
 			 struct radeon_fence *fence);

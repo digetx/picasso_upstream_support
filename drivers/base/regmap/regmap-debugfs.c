@@ -265,6 +265,7 @@ static ssize_t regmap_map_write_file(struct file *file,
 	char *start = buf;
 	unsigned long reg, value;
 	struct regmap *map = file->private_data;
+	int ret;
 
 	buf_size = min(count, (sizeof(buf)-1));
 	if (copy_from_user(buf, user_buf, buf_size))
@@ -282,7 +283,9 @@ static ssize_t regmap_map_write_file(struct file *file,
 	/* Userspace has been fiddling around behind the kernel's back */
 	add_taint(TAINT_USER, LOCKDEP_NOW_UNRELIABLE);
 
-	regmap_write(map, reg, value);
+	ret = regmap_write(map, reg, value);
+	if (ret < 0)
+		return ret;
 	return buf_size;
 }
 #else
@@ -457,16 +460,20 @@ void regmap_debugfs_init(struct regmap *map, const char *name)
 {
 	struct rb_node *next;
 	struct regmap_range_node *range_node;
+	const char *devname = "dummy";
 
 	INIT_LIST_HEAD(&map->debugfs_off_cache);
 	mutex_init(&map->cache_lock);
 
+	if (map->dev)
+		devname = dev_name(map->dev);
+
 	if (name) {
 		map->debugfs_name = kasprintf(GFP_KERNEL, "%s-%s",
-					      dev_name(map->dev), name);
+					      devname, name);
 		name = map->debugfs_name;
 	} else {
-		name = dev_name(map->dev);
+		name = devname;
 	}
 
 	map->debugfs = debugfs_create_dir(name, regmap_debugfs_root);

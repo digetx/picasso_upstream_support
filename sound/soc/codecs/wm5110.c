@@ -37,6 +37,95 @@ struct wm5110_priv {
 	struct arizona_fll fll[2];
 };
 
+static const struct reg_default wm5110_sysclk_revd_patch[] = {
+	{ 0x3093, 0x1001 },
+	{ 0x30E3, 0x1301 },
+	{ 0x3133, 0x1201 },
+	{ 0x3183, 0x1501 },
+	{ 0x31D3, 0x1401 },
+	{ 0x0049, 0x01ea },
+	{ 0x004a, 0x01f2 },
+	{ 0x0057, 0x01e7 },
+	{ 0x0058, 0x01fb },
+	{ 0x33ce, 0xc4f5 },
+	{ 0x33cf, 0x1361 },
+	{ 0x33d0, 0x0402 },
+	{ 0x33d1, 0x4700 },
+	{ 0x33d2, 0x026d },
+	{ 0x33d3, 0xff00 },
+	{ 0x33d4, 0x026d },
+	{ 0x33d5, 0x0101 },
+	{ 0x33d6, 0xc4f5 },
+	{ 0x33d7, 0x0361 },
+	{ 0x33d8, 0x0402 },
+	{ 0x33d9, 0x6701 },
+	{ 0x33da, 0xc4f5 },
+	{ 0x33db, 0x136f },
+	{ 0x33dc, 0xc4f5 },
+	{ 0x33dd, 0x134f },
+	{ 0x33de, 0xc4f5 },
+	{ 0x33df, 0x131f },
+	{ 0x33e0, 0x026d },
+	{ 0x33e1, 0x4f01 },
+	{ 0x33e2, 0x026d },
+	{ 0x33e3, 0xf100 },
+	{ 0x33e4, 0x026d },
+	{ 0x33e5, 0x0001 },
+	{ 0x33e6, 0xc4f5 },
+	{ 0x33e7, 0x0361 },
+	{ 0x33e8, 0x0402 },
+	{ 0x33e9, 0x6601 },
+	{ 0x33ea, 0xc4f5 },
+	{ 0x33eb, 0x136f },
+	{ 0x33ec, 0xc4f5 },
+	{ 0x33ed, 0x134f },
+	{ 0x33ee, 0xc4f5 },
+	{ 0x33ef, 0x131f },
+	{ 0x33f0, 0x026d },
+	{ 0x33f1, 0x4e01 },
+	{ 0x33f2, 0x026d },
+	{ 0x33f3, 0xf000 },
+	{ 0x33f6, 0xc4f5 },
+	{ 0x33f7, 0x1361 },
+	{ 0x33f8, 0x0402 },
+	{ 0x33f9, 0x4600 },
+	{ 0x33fa, 0x026d },
+	{ 0x33fb, 0xfe00 },
+};
+
+static int wm5110_sysclk_ev(struct snd_soc_dapm_widget *w,
+			    struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_codec *codec = w->codec;
+	struct arizona *arizona = dev_get_drvdata(codec->dev->parent);
+	struct regmap *regmap = codec->control_data;
+	const struct reg_default *patch = NULL;
+	int i, patch_size;
+
+	switch (arizona->rev) {
+	case 3:
+		patch = wm5110_sysclk_revd_patch;
+		patch_size = ARRAY_SIZE(wm5110_sysclk_revd_patch);
+		break;
+	default:
+		return 0;
+	}
+
+	switch (event) {
+	case SND_SOC_DAPM_POST_PMU:
+		if (patch)
+			for (i = 0; i < patch_size; i++)
+				regmap_write(regmap, patch[i].reg,
+					     patch[i].def);
+		break;
+
+	default:
+		break;
+	}
+
+	return 0;
+}
+
 static DECLARE_TLV_DB_SCALE(ana_tlv, 0, 100, 0);
 static DECLARE_TLV_DB_SCALE(eq_tlv, -1200, 100, 0);
 static DECLARE_TLV_DB_SCALE(digital_tlv, -6400, 50, 0);
@@ -190,7 +279,7 @@ ARIZONA_MIXER_CONTROLS("DSP2R", ARIZONA_DSP2RMIX_INPUT_1_SOURCE),
 ARIZONA_MIXER_CONTROLS("DSP3L", ARIZONA_DSP3LMIX_INPUT_1_SOURCE),
 ARIZONA_MIXER_CONTROLS("DSP3R", ARIZONA_DSP3RMIX_INPUT_1_SOURCE),
 ARIZONA_MIXER_CONTROLS("DSP4L", ARIZONA_DSP4LMIX_INPUT_1_SOURCE),
-ARIZONA_MIXER_CONTROLS("DSP5R", ARIZONA_DSP4RMIX_INPUT_1_SOURCE),
+ARIZONA_MIXER_CONTROLS("DSP4R", ARIZONA_DSP4RMIX_INPUT_1_SOURCE),
 
 ARIZONA_MIXER_CONTROLS("Mic", ARIZONA_MICMIX_INPUT_1_SOURCE),
 ARIZONA_MIXER_CONTROLS("Noise", ARIZONA_NOISEMIX_INPUT_1_SOURCE),
@@ -386,7 +475,7 @@ static const struct snd_kcontrol_new wm5110_aec_loopback_mux =
 
 static const struct snd_soc_dapm_widget wm5110_dapm_widgets[] = {
 SND_SOC_DAPM_SUPPLY("SYSCLK", ARIZONA_SYSTEM_CLOCK_1, ARIZONA_SYSCLK_ENA_SHIFT,
-		    0, NULL, 0),
+		    0, wm5110_sysclk_ev, SND_SOC_DAPM_POST_PMU),
 SND_SOC_DAPM_SUPPLY("ASYNCCLK", ARIZONA_ASYNC_CLOCK_1,
 		    ARIZONA_ASYNC_CLK_ENA_SHIFT, 0, NULL, 0),
 SND_SOC_DAPM_SUPPLY("OPCLK", ARIZONA_OUTPUT_SYSTEM_CLOCK,
@@ -503,7 +592,8 @@ SND_SOC_DAPM_PGA("ASRC2R", ARIZONA_ASRC_ENABLE, ARIZONA_ASRC2R_ENA_SHIFT, 0,
 		 NULL, 0),
 
 SND_SOC_DAPM_VALUE_MUX("AEC Loopback", ARIZONA_DAC_AEC_CONTROL_1,
-		       ARIZONA_AEC_LOOPBACK_ENA, 0, &wm5110_aec_loopback_mux),
+		       ARIZONA_AEC_LOOPBACK_ENA_SHIFT, 0,
+		       &wm5110_aec_loopback_mux),
 
 SND_SOC_DAPM_AIF_OUT("AIF1TX1", NULL, 0,
 		     ARIZONA_AIF1_TX_ENABLES, ARIZONA_AIF1TX1_ENA_SHIFT, 0),
@@ -855,7 +945,7 @@ static const struct snd_soc_dapm_route wm5110_dapm_routes[] = {
 	{ "HPOUT2R", NULL, "OUT2R" },
 
 	{ "HPOUT3L", NULL, "OUT3L" },
-	{ "HPOUT3R", NULL, "OUT3L" },
+	{ "HPOUT3R", NULL, "OUT3R" },
 
 	{ "SPKOUTLN", NULL, "OUT4L" },
 	{ "SPKOUTLP", NULL, "OUT4L" },
@@ -975,6 +1065,8 @@ static int wm5110_codec_probe(struct snd_soc_codec *codec)
 	ret = snd_soc_codec_set_cache_io(codec, 32, 16, SND_SOC_REGMAP);
 	if (ret != 0)
 		return ret;
+
+	arizona_init_spk(codec);
 
 	snd_soc_dapm_disable_pin(&codec->dapm, "HAPTICS");
 

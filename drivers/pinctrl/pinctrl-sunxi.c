@@ -1754,12 +1754,6 @@ static int sunxi_pinctrl_gpio_get(struct gpio_chip *chip, unsigned offset)
 	return val;
 }
 
-static int sunxi_pinctrl_gpio_direction_output(struct gpio_chip *chip,
-					unsigned offset, int value)
-{
-	return pinctrl_gpio_direction_output(chip->base + offset);
-}
-
 static void sunxi_pinctrl_gpio_set(struct gpio_chip *chip,
 				unsigned offset, int value)
 {
@@ -1768,6 +1762,13 @@ static void sunxi_pinctrl_gpio_set(struct gpio_chip *chip,
 	u8 index = sunxi_data_offset(offset);
 
 	writel((value & DATA_PINS_MASK) << index, pctl->membase + reg);
+}
+
+static int sunxi_pinctrl_gpio_direction_output(struct gpio_chip *chip,
+					unsigned offset, int value)
+{
+	sunxi_pinctrl_gpio_set(chip, offset, value);
+	return pinctrl_gpio_direction_output(chip->base + offset);
 }
 
 static int sunxi_pinctrl_gpio_of_xlate(struct gpio_chip *gc,
@@ -1990,8 +1991,10 @@ static int sunxi_pinctrl_probe(struct platform_device *pdev)
 	}
 
 	clk = devm_clk_get(&pdev->dev, NULL);
-	if (IS_ERR(clk))
+	if (IS_ERR(clk)) {
+		ret = PTR_ERR(clk);
 		goto gpiochip_error;
+	}
 
 	clk_prepare_enable(clk);
 
@@ -2000,7 +2003,8 @@ static int sunxi_pinctrl_probe(struct platform_device *pdev)
 	return 0;
 
 gpiochip_error:
-	ret = gpiochip_remove(pctl->chip);
+	if (gpiochip_remove(pctl->chip))
+		dev_err(&pdev->dev, "failed to remove gpio chip\n");
 pinctrl_error:
 	pinctrl_unregister(pctl->pctl_dev);
 	return ret;

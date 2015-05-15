@@ -193,6 +193,7 @@ struct team {
 	bool user_carrier_enabled;
 	bool queue_override_enabled;
 	struct list_head *qom_lists; /* array of queue override mapping lists */
+	bool port_mtu_change_allowed;
 	long mode_priv[TEAM_MODE_PRIV_LONGS];
 };
 
@@ -249,12 +250,12 @@ team_get_first_port_txable_rcu(struct team *team, struct team_port *port)
 		return port;
 	cur = port;
 	list_for_each_entry_continue_rcu(cur, &team->port_list, list)
-		if (team_port_txable(port))
+		if (team_port_txable(cur))
 			return cur;
 	list_for_each_entry_rcu(cur, &team->port_list, list) {
 		if (cur == port)
 			break;
-		if (team_port_txable(port))
+		if (team_port_txable(cur))
 			return cur;
 	}
 	return NULL;

@@ -95,10 +95,6 @@ ENTRY(cpu_do_switch_mm)
 	ret
 ENDPROC(cpu_do_switch_mm)
 
-cpu_name:
-	.ascii	"AArch64 Processor"
-	.align
-
 	.section ".text.init", #alloc, #execinstr
 
 /*
@@ -119,8 +115,7 @@ ENTRY(__cpu_setup)
 
 	mov	x0, #3 << 20
 	msr	cpacr_el1, x0			// Enable FP/ASIMD
-	mov	x0, #1
-	msr	oslar_el1, x0			// Set the debug OS lock
+	msr	mdscr_el1, xzr			// Reset mdscr_el1
 	tlbi	vmalle1is			// invalidate I + D TLBs
 	/*
 	 * Memory region attributes for LPAE:

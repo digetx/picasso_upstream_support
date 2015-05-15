@@ -562,7 +562,7 @@ int lancer_test_and_set_rdy_state(struct be_adapter *adapter)
 
 	resource_error = lancer_provisioning_error(adapter);
 	if (resource_error)
-		return -1;
+		return -EAGAIN;
 
 	status = lancer_wait_ready(adapter);
 	if (!status) {
@@ -590,8 +590,8 @@ int lancer_test_and_set_rdy_state(struct be_adapter *adapter)
 	 * when PF provisions resources.
 	 */
 	resource_error = lancer_provisioning_error(adapter);
-	if (status == -1 && !resource_error)
-		adapter->eeh_error = true;
+	if (resource_error)
+		status = -EAGAIN;
 
 	return status;
 }
@@ -1150,7 +1150,6 @@ int be_cmd_txq_create(struct be_adapter *adapter, struct be_tx_obj *txo)
 
 	if (lancer_chip(adapter)) {
 		req->hdr.version = 1;
-		req->if_id = cpu_to_le16(adapter->if_handle);
 	} else if (BEx_chip(adapter)) {
 		if (adapter->function_caps & BE_FUNCTION_CAPS_SUPER_NIC)
 			req->hdr.version = 2;
@@ -1158,6 +1157,8 @@ int be_cmd_txq_create(struct be_adapter *adapter, struct be_tx_obj *txo)
 		req->hdr.version = 2;
 	}
 
+	if (req->hdr.version > 0)
+		req->if_id = cpu_to_le16(adapter->if_handle);
 	req->num_pages = PAGES_4K_SPANNED(q_mem->va, q_mem->size);
 	req->ulp_num = BE_ULP1_NUM;
 	req->type = BE_ETH_TX_RING_TYPE_STANDARD;
@@ -2976,22 +2977,17 @@ static struct be_nic_resource_desc *be_get_nic_desc(u8 *buf, u32 desc_count,
 	for (i = 0; i < desc_count; i++) {
 		desc->desc_len = desc->desc_len ? : RESOURCE_DESC_SIZE;
 		if (((void *)desc + desc->desc_len) >
-		    (void *)(buf + max_buf_size)) {
-			desc = NULL;
-			break;
-		}
+		    (void *)(buf + max_buf_size))
+			return NULL;
 
 		if (desc->desc_type == NIC_RESOURCE_DESC_TYPE_V0 ||
 		    desc->desc_type == NIC_RESOURCE_DESC_TYPE_V1)
-			break;
+			return desc;
 
 		desc = (void *)desc + desc->desc_len;
 	}
 
-	if (!desc || i == MAX_RESOURCE_DESC)
-		return NULL;
-
-	return desc;
+	return NULL;
 }
 
 /* Uses Mbox */

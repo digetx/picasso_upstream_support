@@ -78,6 +78,8 @@ enum {
 	BWD_HW,
 };
 
+static struct dentry *debugfs_dir;
+
 /* Translate memory window 0,1 to BAR 2,4 */
 #define MW_TO_BAR(mw)	(mw * 2 + 2)
 
@@ -345,7 +347,7 @@ int ntb_read_remote_spad(struct ntb_device *ndev, unsigned int idx, u32 *val)
  */
 void __iomem *ntb_get_mw_vbase(struct ntb_device *ndev, unsigned int mw)
 {
-	if (mw > NTB_NUM_MW)
+	if (mw >= NTB_NUM_MW)
 		return NULL;
 
 	return ndev->mw[mw].vbase;
@@ -362,7 +364,7 @@ void __iomem *ntb_get_mw_vbase(struct ntb_device *ndev, unsigned int mw)
  */
 resource_size_t ntb_get_mw_size(struct ntb_device *ndev, unsigned int mw)
 {
-	if (mw > NTB_NUM_MW)
+	if (mw >= NTB_NUM_MW)
 		return 0;
 
 	return ndev->mw[mw].bar_sz;
@@ -380,7 +382,7 @@ resource_size_t ntb_get_mw_size(struct ntb_device *ndev, unsigned int mw)
  */
 void ntb_set_mw_addr(struct ntb_device *ndev, unsigned int mw, u64 addr)
 {
-	if (mw > NTB_NUM_MW)
+	if (mw >= NTB_NUM_MW)
 		return;
 
 	dev_dbg(&ndev->pdev->dev, "Writing addr %Lx to BAR %d\n", addr,
@@ -531,9 +533,9 @@ static int ntb_xeon_setup(struct ntb_device *ndev)
 	}
 
 	if (val & SNB_PPD_DEV_TYPE)
-		ndev->dev_type = NTB_DEV_DSD;
-	else
 		ndev->dev_type = NTB_DEV_USD;
+	else
+		ndev->dev_type = NTB_DEV_DSD;
 
 	ndev->reg_ofs.pdb = ndev->reg_base + SNB_PDOORBELL_OFFSET;
 	ndev->reg_ofs.pdb_mask = ndev->reg_base + SNB_PDBMSK_OFFSET;
@@ -547,7 +549,7 @@ static int ntb_xeon_setup(struct ntb_device *ndev)
 	if (ndev->conn_type == NTB_CONN_B2B) {
 		ndev->reg_ofs.sdb = ndev->reg_base + SNB_B2B_DOORBELL_OFFSET;
 		ndev->reg_ofs.spad_write = ndev->reg_base + SNB_B2B_SPAD_OFFSET;
-		ndev->limits.max_spads = SNB_MAX_SPADS;
+		ndev->limits.max_spads = SNB_MAX_B2B_SPADS;
 	} else {
 		ndev->reg_ofs.sdb = ndev->reg_base + SNB_SDOORBELL_OFFSET;
 		ndev->reg_ofs.spad_write = ndev->reg_base + SNB_SPAD_OFFSET;
@@ -644,10 +646,16 @@ static int ntb_device_setup(struct ntb_device *ndev)
 		rc = -ENODEV;
 	}
 
+	if (rc)
+		return rc;
+
+	dev_info(&ndev->pdev->dev, "Device Type = %s\n",
+		 ndev->dev_type == NTB_DEV_USD ? "USD/DSP" : "DSD/USP");
+
 	/* Enable Bus Master and Memory Space on the secondary side */
 	writew(PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER, ndev->reg_ofs.spci_cmd);
 
-	return rc;
+	return 0;
 }
 
 static void ntb_device_free(struct ntb_device *ndev)
@@ -992,6 +1000,28 @@ static void ntb_free_callbacks(struct ntb_device *ndev)
 	kfree(ndev->db_cb);
 }
 
+static void ntb_setup_debugfs(struct ntb_device *ndev)
+{
+	if (!debugfs_initialized())
+		return;
+
+	if (!debugfs_dir)
+		debugfs_dir = debugfs_create_dir(KBUILD_MODNAME, NULL);
+
+	ndev->debugfs_dir = debugfs_create_dir(pci_name(ndev->pdev),
+					       debugfs_dir);
+}
+
+static void ntb_free_debugfs(struct ntb_device *ndev)
+{
+	debugfs_remove_recursive(ndev->debugfs_dir);
+
+	if (debugfs_dir && simple_empty(debugfs_dir)) {
+		debugfs_remove_recursive(debugfs_dir);
+		debugfs_dir = NULL;
+	}
+}
+
 static int ntb_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	struct ntb_device *ndev;
@@ -1004,6 +1034,7 @@ static int ntb_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ndev->pdev = pdev;
 	ndev->link_status = NTB_LINK_DOWN;
 	pci_set_drvdata(pdev, ndev);
+	ntb_setup_debugfs(ndev);
 
 	rc = pci_enable_device(pdev);
 	if (rc)
@@ -1027,8 +1058,8 @@ static int ntb_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		ndev->mw[i].vbase =
 		    ioremap_wc(pci_resource_start(pdev, MW_TO_BAR(i)),
 			       ndev->mw[i].bar_sz);
-		dev_info(&pdev->dev, "MW %d size %d\n", i,
-			 (u32) pci_resource_len(pdev, MW_TO_BAR(i)));
+		dev_info(&pdev->dev, "MW %d size %llu\n", i,
+			 pci_resource_len(pdev, MW_TO_BAR(i)));
 		if (!ndev->mw[i].vbase) {
 			dev_warn(&pdev->dev, "Cannot remap BAR %d\n",
 				 MW_TO_BAR(i));
@@ -1100,6 +1131,7 @@ err2:
 err1:
 	pci_disable_device(pdev);
 err:
+	ntb_free_debugfs(ndev);
 	kfree(ndev);
 
 	dev_err(&pdev->dev, "Error loading %s module\n", KBUILD_MODNAME);
@@ -1129,6 +1161,7 @@ static void ntb_pci_remove(struct pci_dev *pdev)
 	iounmap(ndev->reg_base);
 	pci_release_selected_regions(pdev, NTB_BAR_MASK);
 	pci_disable_device(pdev);
+	ntb_free_debugfs(ndev);
 	kfree(ndev);
 }
 

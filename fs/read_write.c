@@ -947,9 +947,9 @@ out:
 	return ret;
 }
 
-COMPAT_SYSCALL_DEFINE3(readv, unsigned long, fd,
+COMPAT_SYSCALL_DEFINE3(readv, compat_ulong_t, fd,
 		const struct compat_iovec __user *,vec,
-		unsigned long, vlen)
+		compat_ulong_t, vlen)
 {
 	struct fd f = fdget(fd);
 	ssize_t ret;
@@ -983,9 +983,9 @@ COMPAT_SYSCALL_DEFINE4(preadv64, unsigned long, fd,
 	return ret;
 }
 
-COMPAT_SYSCALL_DEFINE5(preadv, unsigned long, fd,
+COMPAT_SYSCALL_DEFINE5(preadv, compat_ulong_t, fd,
 		const struct compat_iovec __user *,vec,
-		unsigned long, vlen, u32, pos_low, u32, pos_high)
+		compat_ulong_t, vlen, u32, pos_low, u32, pos_high)
 {
 	loff_t pos = ((loff_t)pos_high << 32) | pos_low;
 	return compat_sys_preadv64(fd, vec, vlen, pos);
@@ -1013,9 +1013,9 @@ out:
 	return ret;
 }
 
-COMPAT_SYSCALL_DEFINE3(writev, unsigned long, fd,
+COMPAT_SYSCALL_DEFINE3(writev, compat_ulong_t, fd,
 		const struct compat_iovec __user *, vec,
-		unsigned long, vlen)
+		compat_ulong_t, vlen)
 {
 	struct fd f = fdget(fd);
 	ssize_t ret;
@@ -1049,9 +1049,9 @@ COMPAT_SYSCALL_DEFINE4(pwritev64, unsigned long, fd,
 	return ret;
 }
 
-COMPAT_SYSCALL_DEFINE5(pwritev, unsigned long, fd,
+COMPAT_SYSCALL_DEFINE5(pwritev, compat_ulong_t, fd,
 		const struct compat_iovec __user *,vec,
-		unsigned long, vlen, u32, pos_low, u32, pos_high)
+		compat_ulong_t, vlen, u32, pos_low, u32, pos_high)
 {
 	loff_t pos = ((loff_t)pos_high << 32) | pos_low;
 	return compat_sys_pwritev64(fd, vec, vlen, pos);
@@ -1064,6 +1064,7 @@ static ssize_t do_sendfile(int out_fd, int in_fd, loff_t *ppos,
 	struct fd in, out;
 	struct inode *in_inode, *out_inode;
 	loff_t pos;
+	loff_t out_pos;
 	ssize_t retval;
 	int fl;
 
@@ -1077,12 +1078,14 @@ static ssize_t do_sendfile(int out_fd, int in_fd, loff_t *ppos,
 	if (!(in.file->f_mode & FMODE_READ))
 		goto fput_in;
 	retval = -ESPIPE;
-	if (!ppos)
-		ppos = &in.file->f_pos;
-	else
+	if (!ppos) {
+		pos = in.file->f_pos;
+	} else {
+		pos = *ppos;
 		if (!(in.file->f_mode & FMODE_PREAD))
 			goto fput_in;
-	retval = rw_verify_area(READ, in.file, ppos, count);
+	}
+	retval = rw_verify_area(READ, in.file, &pos, count);
 	if (retval < 0)
 		goto fput_in;
 	count = retval;
@@ -1099,7 +1102,8 @@ static ssize_t do_sendfile(int out_fd, int in_fd, loff_t *ppos,
 	retval = -EINVAL;
 	in_inode = file_inode(in.file);
 	out_inode = file_inode(out.file);
-	retval = rw_verify_area(WRITE, out.file, &out.file->f_pos, count);
+	out_pos = out.file->f_pos;
+	retval = rw_verify_area(WRITE, out.file, &out_pos, count);
 	if (retval < 0)
 		goto fput_out;
 	count = retval;
@@ -1107,7 +1111,6 @@ static ssize_t do_sendfile(int out_fd, int in_fd, loff_t *ppos,
 	if (!max)
 		max = min(in_inode->i_sb->s_maxbytes, out_inode->i_sb->s_maxbytes);
 
-	pos = *ppos;
 	if (unlikely(pos + count > max)) {
 		retval = -EOVERFLOW;
 		if (pos >= max)
@@ -1126,18 +1129,23 @@ static ssize_t do_sendfile(int out_fd, int in_fd, loff_t *ppos,
 	if (in.file->f_flags & O_NONBLOCK)
 		fl = SPLICE_F_NONBLOCK;
 #endif
-	retval = do_splice_direct(in.file, ppos, out.file, count, fl);
+	retval = do_splice_direct(in.file, &pos, out.file, &out_pos, count, fl);
 
 	if (retval > 0) {
 		add_rchar(current, retval);
 		add_wchar(current, retval);
 		fsnotify_access(in.file);
 		fsnotify_modify(out.file);
+		out.file->f_pos = out_pos;
+		if (ppos)
+			*ppos = pos;
+		else
+			in.file->f_pos = pos;
 	}
 
 	inc_syscr(current);
 	inc_syscw(current);
-	if (*ppos > max)
+	if (pos > max)
 		retval = -EOVERFLOW;
 
 fput_out:

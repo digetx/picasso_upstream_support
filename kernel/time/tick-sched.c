@@ -306,7 +306,7 @@ static int __cpuinit tick_nohz_cpu_down_callback(struct notifier_block *nfb,
 		 * we can't safely shutdown that CPU.
 		 */
 		if (have_nohz_full_mask && tick_do_timer_cpu == cpu)
-			return -EINVAL;
+			return NOTIFY_BAD;
 		break;
 	}
 	return NOTIFY_OK;
@@ -717,10 +717,13 @@ static bool can_stop_idle_tick(int cpu, struct tick_sched *ts)
 	if (unlikely(!cpu_online(cpu))) {
 		if (cpu == tick_do_timer_cpu)
 			tick_do_timer_cpu = TICK_DO_TIMER_NONE;
+		return false;
 	}
 
-	if (unlikely(ts->nohz_mode == NOHZ_MODE_INACTIVE))
+	if (unlikely(ts->nohz_mode == NOHZ_MODE_INACTIVE)) {
+		ts->sleep_length = (ktime_t) { .tv64 = NSEC_PER_SEC/HZ };
 		return false;
+	}
 
 	if (need_resched())
 		return false;
@@ -831,13 +834,10 @@ void tick_nohz_irq_exit(void)
 {
 	struct tick_sched *ts = &__get_cpu_var(tick_cpu_sched);
 
-	if (ts->inidle) {
-		/* Cancel the timer because CPU already waken up from the C-states*/
-		menu_hrtimer_cancel();
+	if (ts->inidle)
 		__tick_nohz_idle_enter(ts);
-	} else {
+	else
 		tick_nohz_full_stop_tick(ts);
-	}
 }
 
 /**
@@ -935,8 +935,6 @@ void tick_nohz_idle_exit(void)
 
 	ts->inidle = 0;
 
-	/* Cancel the timer because CPU already waken up from the C-states*/
-	menu_hrtimer_cancel();
 	if (ts->idle_active || ts->tick_stopped)
 		now = ktime_get();
 
@@ -1168,7 +1166,7 @@ void tick_cancel_sched_timer(int cpu)
 		hrtimer_cancel(&ts->sched_timer);
 # endif
 
-	ts->nohz_mode = NOHZ_MODE_INACTIVE;
+	memset(ts, 0, sizeof(*ts));
 }
 #endif
 

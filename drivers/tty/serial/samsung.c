@@ -534,11 +534,15 @@ static void s3c24xx_serial_pm(struct uart_port *port, unsigned int level,
 			      unsigned int old)
 {
 	struct s3c24xx_uart_port *ourport = to_ourport(port);
+	int timeout = 10000;
 
 	ourport->pm_level = level;
 
 	switch (level) {
 	case 3:
+		while (--timeout && !s3c24xx_serial_txempty_nofifo(port))
+			udelay(100);
+
 		if (!IS_ERR(ourport->baudclk))
 			clk_disable_unprepare(ourport->baudclk);
 
@@ -1166,6 +1170,18 @@ static int s3c24xx_serial_init_port(struct s3c24xx_uart_port *ourport,
 		ourport->tx_irq = ret;
 
 	ourport->clk	= clk_get(&platdev->dev, "uart");
+	if (IS_ERR(ourport->clk)) {
+		pr_err("%s: Controller clock not found\n",
+				dev_name(&platdev->dev));
+		return PTR_ERR(ourport->clk);
+	}
+
+	ret = clk_prepare_enable(ourport->clk);
+	if (ret) {
+		pr_err("uart: clock failed to prepare+enable: %d\n", ret);
+		clk_put(ourport->clk);
+		return ret;
+	}
 
 	/* Keep all interrupts masked and cleared */
 	if (s3c24xx_serial_has_interrupt_mask(port)) {
@@ -1180,6 +1196,7 @@ static int s3c24xx_serial_init_port(struct s3c24xx_uart_port *ourport,
 
 	/* reset the fifos (and setup the uart) */
 	s3c24xx_serial_resetport(port, cfg);
+	clk_disable_unprepare(ourport->clk);
 	return 0;
 }
 
@@ -1803,6 +1820,7 @@ static int __init s3c24xx_serial_modinit(void)
 
 static void __exit s3c24xx_serial_modexit(void)
 {
+	platform_driver_unregister(&samsung_serial_driver);
 	uart_unregister_driver(&s3c24xx_uart_drv);
 }
 

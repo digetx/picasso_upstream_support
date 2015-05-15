@@ -555,6 +555,24 @@ static const struct pipe_buf_operations default_pipe_buf_ops = {
 	.get = generic_pipe_buf_get,
 };
 
+static int generic_pipe_buf_nosteal(struct pipe_inode_info *pipe,
+				    struct pipe_buffer *buf)
+{
+	return 1;
+}
+
+/* Pipe buffer operations for a socket and similar. */
+const struct pipe_buf_operations nosteal_pipe_buf_ops = {
+	.can_merge = 0,
+	.map = generic_pipe_buf_map,
+	.unmap = generic_pipe_buf_unmap,
+	.confirm = generic_pipe_buf_confirm,
+	.release = generic_pipe_buf_release,
+	.steal = generic_pipe_buf_nosteal,
+	.get = generic_pipe_buf_get,
+};
+EXPORT_SYMBOL(nosteal_pipe_buf_ops);
+
 static ssize_t kernel_readv(struct file *file, const struct iovec *vec,
 			    unsigned long vlen, loff_t offset)
 {
@@ -994,12 +1012,16 @@ generic_file_splice_write(struct pipe_inode_info *pipe, struct file *out,
 	struct address_space *mapping = out->f_mapping;
 	struct inode *inode = mapping->host;
 	struct splice_desc sd = {
-		.total_len = len,
 		.flags = flags,
-		.pos = *ppos,
 		.u.file = out,
 	};
 	ssize_t ret;
+
+	ret = generic_write_checks(out, ppos, &len, S_ISBLK(inode->i_mode));
+	if (ret)
+		return ret;
+	sd.total_len = len;
+	sd.pos = *ppos;
 
 	pipe_lock(pipe);
 
@@ -1274,7 +1296,7 @@ static int direct_splice_actor(struct pipe_inode_info *pipe,
 {
 	struct file *file = sd->u.file;
 
-	return do_splice_from(pipe, file, &file->f_pos, sd->total_len,
+	return do_splice_from(pipe, file, sd->opos, sd->total_len,
 			      sd->flags);
 }
 
@@ -1283,6 +1305,7 @@ static int direct_splice_actor(struct pipe_inode_info *pipe,
  * @in:		file to splice from
  * @ppos:	input file offset
  * @out:	file to splice to
+ * @opos:	output file offset
  * @len:	number of bytes to splice
  * @flags:	splice modifier flags
  *
@@ -1294,7 +1317,7 @@ static int direct_splice_actor(struct pipe_inode_info *pipe,
  *
  */
 long do_splice_direct(struct file *in, loff_t *ppos, struct file *out,
-		      size_t len, unsigned int flags)
+		      loff_t *opos, size_t len, unsigned int flags)
 {
 	struct splice_desc sd = {
 		.len		= len,
@@ -1302,6 +1325,7 @@ long do_splice_direct(struct file *in, loff_t *ppos, struct file *out,
 		.flags		= flags,
 		.pos		= *ppos,
 		.u.file		= out,
+		.opos		= opos,
 	};
 	long ret;
 
@@ -1325,7 +1349,7 @@ static long do_splice(struct file *in, loff_t __user *off_in,
 {
 	struct pipe_inode_info *ipipe;
 	struct pipe_inode_info *opipe;
-	loff_t offset, *off;
+	loff_t offset;
 	long ret;
 
 	ipipe = get_pipe_info(in);
@@ -1356,13 +1380,15 @@ static long do_splice(struct file *in, loff_t __user *off_in,
 				return -EINVAL;
 			if (copy_from_user(&offset, off_out, sizeof(loff_t)))
 				return -EFAULT;
-			off = &offset;
-		} else
-			off = &out->f_pos;
+		} else {
+			offset = out->f_pos;
+		}
 
-		ret = do_splice_from(ipipe, out, off, len, flags);
+		ret = do_splice_from(ipipe, out, &offset, len, flags);
 
-		if (off_out && copy_to_user(off_out, off, sizeof(loff_t)))
+		if (!off_out)
+			out->f_pos = offset;
+		else if (copy_to_user(off_out, &offset, sizeof(loff_t)))
 			ret = -EFAULT;
 
 		return ret;
@@ -1376,13 +1402,15 @@ static long do_splice(struct file *in, loff_t __user *off_in,
 				return -EINVAL;
 			if (copy_from_user(&offset, off_in, sizeof(loff_t)))
 				return -EFAULT;
-			off = &offset;
-		} else
-			off = &in->f_pos;
+		} else {
+			offset = in->f_pos;
+		}
 
-		ret = do_splice_to(in, off, opipe, len, flags);
+		ret = do_splice_to(in, &offset, opipe, len, flags);
 
-		if (off_in && copy_to_user(off_in, off, sizeof(loff_t)))
+		if (!off_in)
+			in->f_pos = offset;
+		else if (copy_to_user(off_in, &offset, sizeof(loff_t)))
 			ret = -EFAULT;
 
 		return ret;

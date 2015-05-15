@@ -68,16 +68,6 @@ define_pe_printk_level(pe_err, KERN_ERR);
 define_pe_printk_level(pe_warn, KERN_WARNING);
 define_pe_printk_level(pe_info, KERN_INFO);
 
-static struct pci_dn *pnv_ioda_get_pdn(struct pci_dev *dev)
-{
-	struct device_node *np;
-
-	np = pci_device_to_OF_node(dev);
-	if (!np)
-		return NULL;
-	return PCI_DN(np);
-}
-
 static int pnv_ioda_alloc_pe(struct pnv_phb *phb)
 {
 	unsigned long pe;
@@ -110,7 +100,7 @@ static struct pnv_ioda_pe *pnv_ioda_get_pe(struct pci_dev *dev)
 {
 	struct pci_controller *hose = pci_bus_to_host(dev->bus);
 	struct pnv_phb *phb = hose->private_data;
-	struct pci_dn *pdn = pnv_ioda_get_pdn(dev);
+	struct pci_dn *pdn = pci_get_pdn(dev);
 
 	if (!pdn)
 		return NULL;
@@ -161,19 +151,29 @@ static int pnv_ioda_configure_pe(struct pnv_phb *phb, struct pnv_ioda_pe *pe)
 		rid_end = pe->rid + 1;
 	}
 
-	/* Associate PE in PELT */
+	/*
+	 * Associate PE in PELT. We need add the PE into the
+	 * corresponding PELT-V as well. Otherwise, the error
+	 * originated from the PE might contribute to other
+	 * PEs.
+	 */
 	rc = opal_pci_set_pe(phb->opal_id, pe->pe_number, pe->rid,
 			     bcomp, dcomp, fcomp, OPAL_MAP_PE);
 	if (rc) {
 		pe_err(pe, "OPAL error %ld trying to setup PELT table\n", rc);
 		return -ENXIO;
 	}
+
+	rc = opal_pci_set_peltv(phb->opal_id, pe->pe_number,
+				pe->pe_number, OPAL_ADD_PE_TO_DOMAIN);
+	if (rc)
+		pe_warn(pe, "OPAL error %d adding self to PELTV\n", rc);
 	opal_pci_eeh_freeze_clear(phb->opal_id, pe->pe_number,
 				  OPAL_EEH_ACTION_CLEAR_FREEZE_ALL);
 
 	/* Add to all parents PELT-V */
 	while (parent) {
-		struct pci_dn *pdn = pnv_ioda_get_pdn(parent);
+		struct pci_dn *pdn = pci_get_pdn(parent);
 		if (pdn && pdn->pe_number != IODA_INVALID_PE) {
 			rc = opal_pci_set_peltv(phb->opal_id, pdn->pe_number,
 						pe->pe_number, OPAL_ADD_PE_TO_DOMAIN);
@@ -252,7 +252,7 @@ static struct pnv_ioda_pe *pnv_ioda_setup_dev_PE(struct pci_dev *dev)
 {
 	struct pci_controller *hose = pci_bus_to_host(dev->bus);
 	struct pnv_phb *phb = hose->private_data;
-	struct pci_dn *pdn = pnv_ioda_get_pdn(dev);
+	struct pci_dn *pdn = pci_get_pdn(dev);
 	struct pnv_ioda_pe *pe;
 	int pe_num;
 
@@ -323,7 +323,7 @@ static void pnv_ioda_setup_same_PE(struct pci_bus *bus, struct pnv_ioda_pe *pe)
 	struct pci_dev *dev;
 
 	list_for_each_entry(dev, &bus->devices, bus_list) {
-		struct pci_dn *pdn = pnv_ioda_get_pdn(dev);
+		struct pci_dn *pdn = pci_get_pdn(dev);
 
 		if (pdn == NULL) {
 			pr_warn("%s: No device node associated with device !\n",
@@ -436,7 +436,7 @@ static void pnv_pci_ioda_setup_PEs(void)
 
 static void pnv_pci_ioda_dma_dev_setup(struct pnv_phb *phb, struct pci_dev *pdev)
 {
-	struct pci_dn *pdn = pnv_ioda_get_pdn(pdev);
+	struct pci_dn *pdn = pci_get_pdn(pdev);
 	struct pnv_ioda_pe *pe;
 
 	/*
@@ -449,6 +449,17 @@ static void pnv_pci_ioda_dma_dev_setup(struct pnv_phb *phb, struct pci_dev *pdev
 
 	pe = &phb->ioda.pe_array[pdn->pe_number];
 	set_iommu_table_base(&pdev->dev, &pe->tce32_table);
+}
+
+static void pnv_ioda_setup_bus_dma(struct pnv_ioda_pe *pe, struct pci_bus *bus)
+{
+	struct pci_dev *dev;
+
+	list_for_each_entry(dev, &bus->devices, bus_list) {
+		set_iommu_table_base(&dev->dev, &pe->tce32_table);
+		if (dev->subordinate)
+			pnv_ioda_setup_bus_dma(pe, dev->subordinate);
+	}
 }
 
 static void pnv_pci_ioda1_tce_invalidate(struct iommu_table *tbl,
@@ -606,6 +617,11 @@ static void pnv_pci_ioda_setup_dma_pe(struct pnv_phb *phb,
 	}
 	iommu_init_table(tbl, phb->hose->node);
 
+	if (pe->pdev)
+		set_iommu_table_base(&pe->pdev->dev, tbl);
+	else
+		pnv_ioda_setup_bus_dma(pe, pe->pbus);
+
 	return;
  fail:
 	/* XXX Failure: Try to fallback to 64-bit only ? */
@@ -676,6 +692,11 @@ static void pnv_pci_ioda2_setup_dma_pe(struct pnv_phb *phb,
 		tbl->it_type = TCE_PCI_SWINV_CREATE | TCE_PCI_SWINV_FREE;
 	}
 	iommu_init_table(tbl, phb->hose->node);
+
+	if (pe->pdev)
+		set_iommu_table_base(&pe->pdev->dev, tbl);
+	else
+		pnv_ioda_setup_bus_dma(pe, pe->pbus);
 
 	return;
 fail:
@@ -782,6 +803,10 @@ static int pnv_pci_ioda_msi_setup(struct pnv_phb *phb, struct pci_dev *dev,
 	/* Check if we have an MVE */
 	if (pe->mve_number < 0)
 		return -ENXIO;
+
+	/* Force 32-bit MSI on some broken devices */
+	if (dev->no_64bit_msi)
+		is_64 = 0;
 
 	/* Assign XIVE to PE */
 	rc = opal_pci_set_xive_pe(phb->opal_id, pe->pe_number, xive_num);
@@ -1035,7 +1060,7 @@ static int pnv_pci_enable_device_hook(struct pci_dev *dev)
 	if (!phb->initialized)
 		return 0;
 
-	pdn = pnv_ioda_get_pdn(dev);
+	pdn = pci_get_pdn(dev);
 	if (!pdn || pdn->pe_number == IODA_INVALID_PE)
 		return -EINVAL;
 
@@ -1046,6 +1071,12 @@ static u32 pnv_ioda_bdfn_to_pe(struct pnv_phb *phb, struct pci_bus *bus,
 			       u32 devfn)
 {
 	return phb->ioda.pe_rmap[(bus->number << 8) | devfn];
+}
+
+static void pnv_pci_ioda_shutdown(struct pnv_phb *phb)
+{
+	opal_pci_reset(phb->opal_id, OPAL_PCI_IODA_TABLE_RESET,
+		       OPAL_ASSERT_RESET);
 }
 
 void __init pnv_pci_init_ioda_phb(struct device_node *np, int ioda_type)
@@ -1177,6 +1208,9 @@ void __init pnv_pci_init_ioda_phb(struct device_node *np, int ioda_type)
 
 	/* Setup TCEs */
 	phb->dma_dev_setup = pnv_pci_ioda_dma_dev_setup;
+
+	/* Setup shutdown function for kexec */
+	phb->shutdown = pnv_pci_ioda_shutdown;
 
 	/* Setup MSI support */
 	pnv_pci_init_ioda_msis(phb);

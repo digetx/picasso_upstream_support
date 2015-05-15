@@ -122,7 +122,7 @@ static int iblock_configure_device(struct se_device *dev)
 	q = bdev_get_queue(bd);
 
 	dev->dev_attrib.hw_block_size = bdev_logical_block_size(bd);
-	dev->dev_attrib.hw_max_sectors = UINT_MAX;
+	dev->dev_attrib.hw_max_sectors = queue_max_hw_sectors(q);
 	dev->dev_attrib.hw_queue_depth = q->nr_requests;
 
 	/*
@@ -615,6 +615,8 @@ iblock_execute_rw(struct se_cmd *cmd)
 				rw = WRITE_FUA;
 			else if (!(q->flush_flags & REQ_FLUSH))
 				rw = WRITE_FUA;
+			else
+				rw = WRITE;
 		} else {
 			rw = WRITE;
 		}

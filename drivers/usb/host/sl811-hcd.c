@@ -22,7 +22,7 @@
  * and usb-storage.
  *
  * TODO:
- * - usb suspend/resume triggered by sl811 (with USB_SUSPEND)
+ * - usb suspend/resume triggered by sl811 (with PM_RUNTIME)
  * - various issues noted in the code
  * - performance work; use both register banks; ...
  * - use urb->iso_frame_desc[] with ISO transfers
@@ -1251,7 +1251,7 @@ sl811h_hub_control(
 			sl811_write(sl811, SL11H_CTLREG1, sl811->ctrl1);
 
 			mod_timer(&sl811->timer, jiffies
-					+ msecs_to_jiffies(20));
+					+ msecs_to_jiffies(USB_RESUME_TIMEOUT));
 			break;
 		case USB_PORT_FEAT_POWER:
 			port_power(sl811, 0);

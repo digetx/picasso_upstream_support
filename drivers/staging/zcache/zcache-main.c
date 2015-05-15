@@ -1811,10 +1811,12 @@ static int zcache_comp_init(void)
 #else
 	if (*zcache_comp_name != '\0') {
 		ret = crypto_has_comp(zcache_comp_name, 0, 0);
-		if (!ret)
+		if (!ret) {
 			pr_info("zcache: %s not supported\n",
 					zcache_comp_name);
-		goto out;
+			ret = 1;
+			goto out;
+		}
 	}
 	if (!ret)
 		strcpy(zcache_comp_name, "lzo");
@@ -1922,15 +1924,15 @@ out:
 
 #ifdef CONFIG_ZCACHE_MODULE
 #ifdef CONFIG_RAMSTER
-module_param(ramster_enabled, int, S_IRUGO);
+module_param(ramster_enabled, bool, S_IRUGO);
 module_param(disable_frontswap_selfshrink, int, S_IRUGO);
 #endif
-module_param(disable_cleancache, int, S_IRUGO);
-module_param(disable_frontswap, int, S_IRUGO);
+module_param(disable_cleancache, bool, S_IRUGO);
+module_param(disable_frontswap, bool, S_IRUGO);
 #ifdef FRONTSWAP_HAS_EXCLUSIVE_GETS
 module_param(frontswap_has_exclusive_gets, bool, S_IRUGO);
 #endif
-module_param(disable_frontswap_ignore_nonactive, int, S_IRUGO);
+module_param(disable_frontswap_ignore_nonactive, bool, S_IRUGO);
 module_param(zcache_comp_name, charp, S_IRUGO);
 module_init(zcache_init);
 MODULE_LICENSE("GPL");

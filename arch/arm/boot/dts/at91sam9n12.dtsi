@@ -31,8 +31,12 @@
 		ssc0 = &ssc0;
 	};
 	cpus {
-		cpu@0 {
-			compatible = "arm,arm926ejs";
+		#address-cells = <0>;
+		#size-cells = <0>;
+
+		cpu {
+			compatible = "arm,arm926ej-s";
+			device_type = "cpu";
 		};
 	};
 
@@ -57,6 +61,7 @@
 				compatible = "atmel,at91rm9200-aic";
 				interrupt-controller;
 				reg = <0xfffff000 0x200>;
+				atmel,external-irqs = <31>;
 			};
 
 			ramc0: ramc@ffffe800 {

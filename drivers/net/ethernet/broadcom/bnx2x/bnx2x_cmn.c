@@ -153,6 +153,7 @@ static u16 bnx2x_free_tx_pkt(struct bnx2x *bp, struct bnx2x_fp_txdata *txdata,
 	struct sk_buff *skb = tx_buf->skb;
 	u16 bd_idx = TX_BD(tx_buf->first_bd), new_cons;
 	int nbd;
+	u16 split_bd_len = 0;
 
 	/* prefetch skb end pointer to speedup dev_kfree_skb() */
 	prefetch(&skb->end);
@@ -160,10 +161,7 @@ static u16 bnx2x_free_tx_pkt(struct bnx2x *bp, struct bnx2x_fp_txdata *txdata,
 	DP(NETIF_MSG_TX_DONE, "fp[%d]: pkt_idx %d  buff @(%p)->skb %p\n",
 	   txdata->txq_index, idx, tx_buf, skb);
 
-	/* unmap first bd */
 	tx_start_bd = &txdata->tx_desc_ring[bd_idx].start_bd;
-	dma_unmap_single(&bp->pdev->dev, BD_UNMAP_ADDR(tx_start_bd),
-			 BD_UNMAP_LEN(tx_start_bd), DMA_TO_DEVICE);
 
 
 	nbd = le16_to_cpu(tx_start_bd->nbd) - 1;
@@ -182,11 +180,24 @@ static u16 bnx2x_free_tx_pkt(struct bnx2x *bp, struct bnx2x_fp_txdata *txdata,
 	--nbd;
 	bd_idx = TX_BD(NEXT_TX_IDX(bd_idx));
 
-	/* ...and the TSO split header bd since they have no mapping */
-	if (tx_buf->flags & BNX2X_TSO_SPLIT_BD) {
+	if (tx_buf->flags & BNX2X_HAS_SECOND_PBD) {
+		/* Skip second parse bd... */
 		--nbd;
 		bd_idx = TX_BD(NEXT_TX_IDX(bd_idx));
 	}
+
+	/* TSO headers+data bds share a common mapping. See bnx2x_tx_split() */
+	if (tx_buf->flags & BNX2X_TSO_SPLIT_BD) {
+		tx_data_bd = &txdata->tx_desc_ring[bd_idx].reg_bd;
+		split_bd_len = BD_UNMAP_LEN(tx_data_bd);
+		--nbd;
+		bd_idx = TX_BD(NEXT_TX_IDX(bd_idx));
+	}
+
+	/* unmap first bd */
+	dma_unmap_single(&bp->pdev->dev, BD_UNMAP_ADDR(tx_start_bd),
+			 BD_UNMAP_LEN(tx_start_bd) + split_bd_len,
+			 DMA_TO_DEVICE);
 
 	/* now free frags */
 	while (nbd > 0) {
@@ -670,6 +681,7 @@ static void bnx2x_gro_receive(struct bnx2x *bp, struct bnx2x_fastpath *fp,
 		}
 	}
 #endif
+	skb_record_rx_queue(skb, fp->rx_queue);
 	napi_gro_receive(&fp->napi, skb);
 }
 
@@ -739,7 +751,8 @@ static void bnx2x_tpa_stop(struct bnx2x *bp, struct bnx2x_fastpath *fp,
 
 		return;
 	}
-	bnx2x_frag_free(fp, new_data);
+	if (new_data)
+		bnx2x_frag_free(fp, new_data);
 drop:
 	/* drop the packet and keep the buffer in the bin */
 	DP(NETIF_MSG_RX_STATUS,
@@ -3192,11 +3205,11 @@ static u32 bnx2x_xmit_type(struct bnx2x *bp, struct sk_buff *skb)
 		rc |= XMIT_CSUM_TCP;
 
 	if (skb_is_gso_v6(skb)) {
-		rc |= (XMIT_GSO_V6 | XMIT_CSUM_TCP | XMIT_CSUM_V6);
+		rc |= (XMIT_GSO_V6 | XMIT_CSUM_TCP);
 		if (rc & XMIT_CSUM_ENC)
 			rc |= XMIT_GSO_ENC_V6;
 	} else if (skb_is_gso(skb)) {
-		rc |= (XMIT_GSO_V4 | XMIT_CSUM_V4 | XMIT_CSUM_TCP);
+		rc |= (XMIT_GSO_V4 | XMIT_CSUM_TCP);
 		if (rc & XMIT_CSUM_ENC)
 			rc |= XMIT_GSO_ENC_V4;
 	}
@@ -3313,6 +3326,7 @@ static void bnx2x_set_pbd_gso_e2(struct sk_buff *skb, u32 *parsing_data,
  */
 static void bnx2x_set_pbd_gso(struct sk_buff *skb,
 			      struct eth_tx_parse_bd_e1x *pbd,
+			      struct eth_tx_start_bd *tx_start_bd,
 			      u32 xmit_type)
 {
 	pbd->lso_mss = cpu_to_le16(skb_shinfo(skb)->gso_size);
@@ -3326,11 +3340,14 @@ static void bnx2x_set_pbd_gso(struct sk_buff *skb,
 						   ip_hdr(skb)->daddr,
 						   0, IPPROTO_TCP, 0));
 
-	} else
+		/* GSO on 57710/57711 needs FW to calculate IP checksum */
+		tx_start_bd->bd_flags.as_bitfield |= ETH_TX_BD_FLAGS_IP_CSUM;
+	} else {
 		pbd->tcp_pseudo_csum =
 			bswab16(~csum_ipv6_magic(&ipv6_hdr(skb)->saddr,
 						 &ipv6_hdr(skb)->daddr,
 						 0, IPPROTO_TCP, 0));
+	}
 
 	pbd->global_data |=
 		cpu_to_le16(ETH_TX_PARSE_BD_E1X_PSEUDO_CS_WITHOUT_LEN);
@@ -3479,19 +3496,18 @@ static void bnx2x_update_pbds_gso_enc(struct sk_buff *skb,
 {
 	u16 hlen_w = 0;
 	u8 outerip_off, outerip_len = 0;
+
 	/* from outer IP to transport */
 	hlen_w = (skb_inner_transport_header(skb) -
 		  skb_network_header(skb)) >> 1;
 
 	/* transport len */
-	if (xmit_type & XMIT_CSUM_TCP)
-		hlen_w += inner_tcp_hdrlen(skb) >> 1;
-	else
-		hlen_w += sizeof(struct udphdr) >> 1;
+	hlen_w += inner_tcp_hdrlen(skb) >> 1;
 
 	pbd2->fw_ip_hdr_to_payload_w = hlen_w;
 
-	if (xmit_type & XMIT_CSUM_ENC_V4) {
+	/* outer IP header info */
+	if (xmit_type & XMIT_CSUM_V4) {
 		struct iphdr *iph = ip_hdr(skb);
 		pbd2->fw_ip_csum_wo_len_flags_frag =
 			bswab16(csum_fold((~iph->check) -
@@ -3745,6 +3761,9 @@ netdev_tx_t bnx2x_start_xmit(struct sk_buff *skb, struct net_device *dev)
 			/* set encapsulation flag in start BD */
 			SET_FLAG(tx_start_bd->general_data,
 				 ETH_TX_START_BD_TUNNEL_EXIST, 1);
+
+			tx_buf->flags |= BNX2X_HAS_SECOND_PBD;
+
 			nbd++;
 		} else if (xmit_type & XMIT_CSUM) {
 			/* Set PBD in checksum offload case w/o encapsulation */
@@ -3814,7 +3833,7 @@ netdev_tx_t bnx2x_start_xmit(struct sk_buff *skb, struct net_device *dev)
 			bnx2x_set_pbd_gso_e2(skb, &pbd_e2_parsing_data,
 					     xmit_type);
 		else
-			bnx2x_set_pbd_gso(skb, pbd_e1x, xmit_type);
+			bnx2x_set_pbd_gso(skb, pbd_e1x, first_bd, xmit_type);
 	}
 
 	/* Set the PBD's parsing_data field if not zero

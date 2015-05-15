@@ -222,8 +222,6 @@ static int mlx4_comm_cmd_poll(struct mlx4_dev *dev, u8 cmd, u16 param,
 		 * FLR process. The only non-zero result in the RESET command
 		 * is MLX4_DELAY_RESET_SLAVE*/
 		if ((MLX4_COMM_CMD_RESET == cmd)) {
-			mlx4_warn(dev, "Got slave FLRed from Communication"
-				  " channel (ret:0x%x)\n", ret_from_pending);
 			err = MLX4_DELAY_RESET_SLAVE;
 		} else {
 			mlx4_warn(dev, "Communication channel timed out\n");
@@ -1546,7 +1544,7 @@ static void mlx4_master_deactivate_admin_state(struct mlx4_priv *priv, int slave
 			vp_oper->vlan_idx = NO_INDX;
 		}
 		if (NO_INDX != vp_oper->mac_idx) {
-			__mlx4_unregister_mac(&priv->dev, port, vp_oper->mac_idx);
+			__mlx4_unregister_mac(&priv->dev, port, vp_oper->state.mac);
 			vp_oper->mac_idx = NO_INDX;
 		}
 	}

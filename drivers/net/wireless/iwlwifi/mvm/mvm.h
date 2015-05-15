@@ -88,6 +88,7 @@ enum iwl_mvm_tx_fifo {
 	IWL_MVM_TX_FIFO_BE,
 	IWL_MVM_TX_FIFO_VI,
 	IWL_MVM_TX_FIFO_VO,
+	IWL_MVM_TX_FIFO_MCAST = 5,
 };
 
 extern struct ieee80211_ops iwl_mvm_hw_ops;
@@ -292,6 +293,7 @@ struct iwl_mvm {
 	struct ieee80211_sta __rcu *fw_id_to_mac_id[IWL_MVM_STATION_COUNT];
 	struct work_struct sta_drained_wk;
 	unsigned long sta_drained[BITS_TO_LONGS(IWL_MVM_STATION_COUNT)];
+	atomic_t pending_frames[IWL_MVM_STATION_COUNT];
 
 	/* configured by mac80211 */
 	u32 rts_threshold;

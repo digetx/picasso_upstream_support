@@ -1384,6 +1384,22 @@ out:
 	return ret;
 }
 
+/*
+ * Function to update ctime/mtime for a given device path.
+ * Mainly used for ctime/mtime based probe like libblkid.
+ */
+static void update_dev_time(char *path_name)
+{
+	struct file *filp;
+
+	filp = filp_open(path_name, O_RDWR, 0);
+	if (!filp)
+		return;
+	file_update_time(filp);
+	filp_close(filp, NULL);
+	return;
+}
+
 static int btrfs_rm_dev_item(struct btrfs_root *root,
 			     struct btrfs_device *device)
 {
@@ -1612,11 +1628,12 @@ int btrfs_rm_device(struct btrfs_root *root, char *device_path)
 		struct btrfs_fs_devices *fs_devices;
 		fs_devices = root->fs_info->fs_devices;
 		while (fs_devices) {
-			if (fs_devices->seed == cur_devices)
+			if (fs_devices->seed == cur_devices) {
+				fs_devices->seed = cur_devices->seed;
 				break;
+			}
 			fs_devices = fs_devices->seed;
 		}
-		fs_devices->seed = cur_devices->seed;
 		cur_devices->seed = NULL;
 		lock_chunks(root);
 		__btrfs_close_devices(cur_devices);
@@ -1642,9 +1659,13 @@ int btrfs_rm_device(struct btrfs_root *root, char *device_path)
 
 	ret = 0;
 
-	/* Notify udev that device has changed */
-	if (bdev)
+	if (bdev) {
+		/* Notify udev that device has changed */
 		btrfs_kobject_uevent(bdev, KOBJ_CHANGE);
+
+		/* Update ctime/mtime for device path for libblkid */
+		update_dev_time(device_path);
+	}
 
 error_brelse:
 	brelse(bh);
@@ -1817,7 +1838,6 @@ static int btrfs_prepare_sprout(struct btrfs_root *root)
 	fs_devices->seeding = 0;
 	fs_devices->num_devices = 0;
 	fs_devices->open_devices = 0;
-	fs_devices->total_devices = 0;
 	fs_devices->seed = seed_devices;
 
 	generate_random_uuid(fs_devices->fsid);
@@ -2089,6 +2109,8 @@ int btrfs_init_new_device(struct btrfs_root *root, char *device_path)
 		ret = btrfs_commit_transaction(trans, root);
 	}
 
+	/* Update ctime/mtime for libblkid */
+	update_dev_time(device_path);
 	return ret;
 
 error_trans:
@@ -3120,14 +3142,13 @@ int btrfs_balance(struct btrfs_balance_control *bctl,
 	allowed = BTRFS_AVAIL_ALLOC_BIT_SINGLE;
 	if (num_devices == 1)
 		allowed |= BTRFS_BLOCK_GROUP_DUP;
-	else if (num_devices < 4)
+	else if (num_devices > 1)
 		allowed |= (BTRFS_BLOCK_GROUP_RAID0 | BTRFS_BLOCK_GROUP_RAID1);
-	else
-		allowed |= (BTRFS_BLOCK_GROUP_RAID0 | BTRFS_BLOCK_GROUP_RAID1 |
-				BTRFS_BLOCK_GROUP_RAID10 |
-				BTRFS_BLOCK_GROUP_RAID5 |
-				BTRFS_BLOCK_GROUP_RAID6);
-
+	if (num_devices > 2)
+		allowed |= BTRFS_BLOCK_GROUP_RAID5;
+	if (num_devices > 3)
+		allowed |= (BTRFS_BLOCK_GROUP_RAID10 |
+			    BTRFS_BLOCK_GROUP_RAID6);
 	if ((bctl->data.flags & BTRFS_BALANCE_ARGS_CONVERT) &&
 	    (!alloc_profile_is_valid(bctl->data.target, 1) ||
 	     (bctl->data.target & ~allowed))) {
@@ -4249,6 +4270,7 @@ int btrfs_num_copies(struct btrfs_fs_info *fs_info, u64 logical, u64 len)
 		btrfs_emerg(fs_info, "Invalid mapping for %Lu-%Lu, got "
 			    "%Lu-%Lu\n", logical, logical+len, em->start,
 			    em->start + em->len);
+		free_extent_map(em);
 		return 1;
 	}
 
@@ -4430,6 +4452,7 @@ static int __btrfs_map_block(struct btrfs_fs_info *fs_info, int rw,
 		btrfs_crit(fs_info, "found a bad mapping, wanted %Lu, "
 			   "found %Lu-%Lu\n", logical, em->start,
 			   em->start + em->len);
+		free_extent_map(em);
 		return -EINVAL;
 	}
 
@@ -5019,42 +5042,16 @@ int btrfs_rmap_block(struct btrfs_mapping_tree *map_tree,
 	return 0;
 }
 
-static void *merge_stripe_index_into_bio_private(void *bi_private,
-						 unsigned int stripe_index)
-{
-	/*
-	 * with single, dup, RAID0, RAID1 and RAID10, stripe_index is
-	 * at most 1.
-	 * The alternative solution (instead of stealing bits from the
-	 * pointer) would be to allocate an intermediate structure
-	 * that contains the old private pointer plus the stripe_index.
-	 */
-	BUG_ON((((uintptr_t)bi_private) & 3) != 0);
-	BUG_ON(stripe_index > 3);
-	return (void *)(((uintptr_t)bi_private) | stripe_index);
-}
-
-static struct btrfs_bio *extract_bbio_from_bio_private(void *bi_private)
-{
-	return (struct btrfs_bio *)(((uintptr_t)bi_private) & ~((uintptr_t)3));
-}
-
-static unsigned int extract_stripe_index_from_bio_private(void *bi_private)
-{
-	return (unsigned int)((uintptr_t)bi_private) & 3;
-}
-
 static void btrfs_end_bio(struct bio *bio, int err)
 {
-	struct btrfs_bio *bbio = extract_bbio_from_bio_private(bio->bi_private);
+	struct btrfs_bio *bbio = bio->bi_private;
 	int is_orig_bio = 0;
 
 	if (err) {
 		atomic_inc(&bbio->error);
 		if (err == -EIO || err == -EREMOTEIO) {
 			unsigned int stripe_index =
-				extract_stripe_index_from_bio_private(
-					bio->bi_private);
+				btrfs_io_bio(bio)->stripe_index;
 			struct btrfs_device *dev;
 
 			BUG_ON(stripe_index >= bbio->num_stripes);
@@ -5084,8 +5081,7 @@ static void btrfs_end_bio(struct bio *bio, int err)
 		}
 		bio->bi_private = bbio->private;
 		bio->bi_end_io = bbio->end_io;
-		bio->bi_bdev = (struct block_device *)
-					(unsigned long)bbio->mirror_num;
+		btrfs_io_bio(bio)->mirror_num = bbio->mirror_num;
 		/* only send an error to the higher layers if it is
 		 * beyond the tolerance of the btrfs bio
 		 */
@@ -5211,8 +5207,7 @@ static void submit_stripe_bio(struct btrfs_root *root, struct btrfs_bio *bbio,
 	struct btrfs_device *dev = bbio->stripes[dev_nr].dev;
 
 	bio->bi_private = bbio;
-	bio->bi_private = merge_stripe_index_into_bio_private(
-			bio->bi_private, (unsigned int)dev_nr);
+	btrfs_io_bio(bio)->stripe_index = dev_nr;
 	bio->bi_end_io = btrfs_end_bio;
 	bio->bi_sector = physical >> 9;
 #ifdef DEBUG
@@ -5273,8 +5268,7 @@ static void bbio_error(struct btrfs_bio *bbio, struct bio *bio, u64 logical)
 	if (atomic_dec_and_test(&bbio->stripes_pending)) {
 		bio->bi_private = bbio->private;
 		bio->bi_end_io = bbio->end_io;
-		bio->bi_bdev = (struct block_device *)
-			(unsigned long)bbio->mirror_num;
+		btrfs_io_bio(bio)->mirror_num = bbio->mirror_num;
 		bio->bi_sector = logical >> 9;
 		kfree(bbio);
 		bio_endio(bio, -EIO);
@@ -5352,7 +5346,7 @@ int btrfs_map_bio(struct btrfs_root *root, int rw, struct bio *bio,
 		}
 
 		if (dev_nr < total_devs - 1) {
-			bio = bio_clone(first_bio, GFP_NOFS);
+			bio = btrfs_bio_clone(first_bio, GFP_NOFS);
 			BUG_ON(!bio); /* -ENOMEM */
 		} else {
 			bio = first_bio;

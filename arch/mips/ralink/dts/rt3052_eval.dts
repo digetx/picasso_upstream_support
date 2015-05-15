@@ -7,6 +7,7 @@
 	model = "Ralink RT3052 evaluation board";
 
 	memory@0 {
+		device_type = "memory";
 		reg = <0x0 0x2000000>;
 	};
 
@@ -42,5 +43,9 @@
 			label = "linux";
 			reg = <0x50000 0x7b0000>;
 		};
+	};
+
+	usb@101c0000 {
+		status = "ok";
 	};
 };

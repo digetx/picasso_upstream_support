@@ -213,6 +213,9 @@ config USE_GENERIC_SMP_HELPERS
 config GENERIC_SMP_IDLE_THREAD
        bool
 
+config GENERIC_IDLE_POLL_SETUP
+       bool
+
 # Select if arch init_task initializer is different to init/init_task.c
 config ARCH_INIT_TASK
        bool
@@ -400,6 +403,12 @@ config CLONE_BACKWARDS2
 	bool
 	help
 	  Architecture has the first two arguments of clone(2) swapped.
+
+config CLONE_BACKWARDS3
+	bool
+	help
+	  Architecture has tls passed as the 3rd argument of clone(2),
+	  not the 5th one.
 
 config ODD_RT_SIGACTION
 	bool

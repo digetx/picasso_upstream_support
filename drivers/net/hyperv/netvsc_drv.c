@@ -31,6 +31,7 @@
 #include <linux/inetdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
+#include <linux/if_vlan.h>
 #include <linux/in.h>
 #include <linux/slab.h>
 #include <net/arp.h>
@@ -137,6 +138,7 @@ static int netvsc_start_xmit(struct sk_buff *skb, struct net_device *net)
 	struct hv_netvsc_packet *packet;
 	int ret;
 	unsigned int i, num_pages, npg_data;
+	u32 skb_length = skb->len;
 
 	/* Add multipages for skb->data and additional 2 for RNDIS */
 	npg_data = (((unsigned long)skb->data + skb_headlen(skb) - 1)
@@ -207,7 +209,7 @@ static int netvsc_start_xmit(struct sk_buff *skb, struct net_device *net)
 	ret = rndis_filter_send(net_device_ctx->device_ctx,
 				  packet);
 	if (ret == 0) {
-		net->stats.tx_bytes += skb->len;
+		net->stats.tx_bytes += skb_length;
 		net->stats.tx_packets++;
 	} else {
 		kfree(packet);
@@ -284,7 +286,9 @@ int netvsc_recv_callback(struct hv_device *device_obj,
 
 	skb->protocol = eth_type_trans(skb, net);
 	skb->ip_summed = CHECKSUM_NONE;
-	skb->vlan_tci = packet->vlan_tci;
+	if (packet->vlan_tci & VLAN_TAG_PRESENT)
+		__vlan_hwaccel_put_tag(skb, htons(ETH_P_8021Q),
+				       packet->vlan_tci);
 
 	net->stats.rx_packets++;
 	net->stats.rx_bytes += packet->total_data_buflen;
@@ -325,7 +329,6 @@ static int netvsc_change_mtu(struct net_device *ndev, int mtu)
 		return -EINVAL;
 
 	nvdev->start_remove = true;
-	cancel_delayed_work_sync(&ndevctx->dwork);
 	cancel_work_sync(&ndevctx->work);
 	netif_tx_disable(ndev);
 	rndis_filter_device_remove(hdev);
@@ -428,8 +431,8 @@ static int netvsc_probe(struct hv_device *dev,
 	net->netdev_ops = &device_ops;
 
 	/* TODO: Add GSO and Checksum offload */
-	net->hw_features = NETIF_F_SG;
-	net->features = NETIF_F_SG | NETIF_F_HW_VLAN_CTAG_TX;
+	net->hw_features = 0;
+	net->features = NETIF_F_HW_VLAN_CTAG_TX;
 
 	SET_ETHTOOL_OPS(net, &ethtool_ops);
 	SET_NETDEV_DEV(net, &dev->device);

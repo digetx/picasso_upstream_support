@@ -61,6 +61,7 @@ static int __init batadv_init(void)
 	batadv_recv_handler_init();
 
 	batadv_iv_init();
+	batadv_nc_init();
 
 	batadv_event_workqueue = create_singlethread_workqueue("bat_events");
 
@@ -138,7 +139,7 @@ int batadv_mesh_init(struct net_device *soft_iface)
 	if (ret < 0)
 		goto err;
 
-	ret = batadv_nc_init(bat_priv);
+	ret = batadv_nc_mesh_init(bat_priv);
 	if (ret < 0)
 		goto err;
 
@@ -163,16 +164,25 @@ void batadv_mesh_free(struct net_device *soft_iface)
 	batadv_vis_quit(bat_priv);
 
 	batadv_gw_node_purge(bat_priv);
-	batadv_originator_free(bat_priv);
-	batadv_nc_free(bat_priv);
-
-	batadv_tt_free(bat_priv);
-
+	batadv_nc_mesh_free(bat_priv);
+	batadv_dat_free(bat_priv);
 	batadv_bla_free(bat_priv);
 
-	batadv_dat_free(bat_priv);
+	/* Free the TT and the originator tables only after having terminated
+	 * all the other depending components which may use these structures for
+	 * their purposes.
+	 */
+	batadv_tt_free(bat_priv);
+
+	/* Since the originator table clean up routine is accessing the TT
+	 * tables as well, it has to be invoked after the TT tables have been
+	 * freed and marked as empty. This ensures that no cleanup RCU callbacks
+	 * accessing the TT data are scheduled for later execution.
+	 */
+	batadv_originator_free(bat_priv);
 
 	free_percpu(bat_priv->bat_counters);
+	bat_priv->bat_counters = NULL;
 
 	atomic_set(&bat_priv->mesh_state, BATADV_MESH_INACTIVE);
 }
@@ -475,7 +485,7 @@ static int batadv_param_set_ra(const char *val, const struct kernel_param *kp)
 	char *algo_name = (char *)val;
 	size_t name_len = strlen(algo_name);
 
-	if (algo_name[name_len - 1] == '\n')
+	if (name_len > 0 && algo_name[name_len - 1] == '\n')
 		algo_name[name_len - 1] = '\0';
 
 	bat_algo_ops = batadv_algo_get(algo_name);

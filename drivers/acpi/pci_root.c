@@ -63,6 +63,9 @@ static struct acpi_scan_handler pci_root_handler = {
 	.ids = root_device_ids,
 	.attach = acpi_pci_root_add,
 	.detach = acpi_pci_root_remove,
+	.hotplug = {
+		.ignore = true,
+	},
 };
 
 /* Lock to protect both acpi_pci_roots lists */
@@ -614,9 +617,12 @@ static void handle_root_bridge_removal(struct acpi_device *device)
 	ej_event->device = device;
 	ej_event->event = ACPI_NOTIFY_EJECT_REQUEST;
 
+	get_device(&device->dev);
 	status = acpi_os_hotplug_execute(acpi_bus_hot_remove_device, ej_event);
-	if (ACPI_FAILURE(status))
+	if (ACPI_FAILURE(status)) {
+		put_device(&device->dev);
 		kfree(ej_event);
+	}
 }
 
 static void _handle_hotplug_event_root(struct work_struct *work)
@@ -641,7 +647,9 @@ static void _handle_hotplug_event_root(struct work_struct *work)
 		/* bus enumerate */
 		printk(KERN_DEBUG "%s: Bus check notify on %s\n", __func__,
 				 (char *)buffer.pointer);
-		if (!root)
+		if (root)
+			acpiphp_check_host_bridge(handle);
+		else
 			handle_root_bridge_insertion(handle);
 
 		break;

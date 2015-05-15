@@ -234,19 +234,12 @@ static int mxs_lradc_read_raw(struct iio_dev *iio_dev,
 {
 	struct mxs_lradc *lradc = iio_priv(iio_dev);
 	int ret;
-	unsigned long mask;
 
 	if (m != IIO_CHAN_INFO_RAW)
 		return -EINVAL;
 
 	/* Check for invalid channel */
 	if (chan->channel > LRADC_MAX_TOTAL_CHANS)
-		return -EINVAL;
-
-	/* Validate the channel if it doesn't intersect with reserved chans. */
-	bitmap_set(&mask, chan->channel, 1);
-	ret = iio_validate_scan_mask_onehot(iio_dev, &mask);
-	if (ret)
 		return -EINVAL;
 
 	/*
@@ -661,12 +654,13 @@ static int mxs_lradc_trigger_init(struct iio_dev *iio)
 {
 	int ret;
 	struct iio_trigger *trig;
+	struct mxs_lradc *lradc = iio_priv(iio);
 
 	trig = iio_trigger_alloc("%s-dev%i", iio->name, iio->id);
 	if (trig == NULL)
 		return -ENOMEM;
 
-	trig->dev.parent = iio->dev.parent;
+	trig->dev.parent = lradc->dev;
 	iio_trigger_set_drvdata(trig, iio);
 	trig->ops = &mxs_lradc_trigger_ops;
 
@@ -676,21 +670,22 @@ static int mxs_lradc_trigger_init(struct iio_dev *iio)
 		return ret;
 	}
 
-	iio->trig = trig;
+	lradc->trig = trig;
 
 	return 0;
 }
 
 static void mxs_lradc_trigger_remove(struct iio_dev *iio)
 {
-	iio_trigger_unregister(iio->trig);
-	iio_trigger_free(iio->trig);
+	struct mxs_lradc *lradc = iio_priv(iio);
+
+	iio_trigger_unregister(lradc->trig);
+	iio_trigger_free(lradc->trig);
 }
 
 static int mxs_lradc_buffer_preenable(struct iio_dev *iio)
 {
 	struct mxs_lradc *lradc = iio_priv(iio);
-	struct iio_buffer *buffer = iio->buffer;
 	int ret = 0, chan, ofs = 0;
 	unsigned long enable = 0;
 	uint32_t ctrl4_set = 0;
@@ -698,7 +693,7 @@ static int mxs_lradc_buffer_preenable(struct iio_dev *iio)
 	uint32_t ctrl1_irq = 0;
 	const uint32_t chan_value = LRADC_CH_ACCUMULATE |
 		((LRADC_DELAY_TIMER_LOOP - 1) << LRADC_CH_NUM_SAMPLES_OFFSET);
-	const int len = bitmap_weight(buffer->scan_mask, LRADC_MAX_TOTAL_CHANS);
+	const int len = bitmap_weight(iio->active_scan_mask, LRADC_MAX_TOTAL_CHANS);
 
 	if (!len)
 		return -EINVAL;
@@ -725,7 +720,7 @@ static int mxs_lradc_buffer_preenable(struct iio_dev *iio)
 		lradc->base + LRADC_CTRL1 + STMP_OFFSET_REG_CLR);
 	writel(0xff, lradc->base + LRADC_CTRL0 + STMP_OFFSET_REG_CLR);
 
-	for_each_set_bit(chan, buffer->scan_mask, LRADC_MAX_TOTAL_CHANS) {
+	for_each_set_bit(chan, iio->active_scan_mask, LRADC_MAX_TOTAL_CHANS) {
 		ctrl4_set |= chan << LRADC_CTRL4_LRADCSELECT_OFFSET(ofs);
 		ctrl4_clr |= LRADC_CTRL4_LRADCSELECT_MASK(ofs);
 		ctrl1_irq |= LRADC_CTRL1_LRADC_IRQ_EN(ofs);

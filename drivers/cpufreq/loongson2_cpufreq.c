@@ -18,6 +18,7 @@
 #include <linux/platform_device.h>
 
 #include <asm/clock.h>
+#include <asm/idle.h>
 
 #include <asm/mach-loongson/loongson.h>
 
@@ -117,17 +118,18 @@ static int loongson2_cpufreq_cpu_init(struct cpufreq_policy *policy)
 		clk_put(cpuclk);
 		return -EINVAL;
 	}
-	ret = clk_set_rate(cpuclk, rate);
-	if (ret) {
-		clk_put(cpuclk);
-		return ret;
-	}
 
 	/* clock table init */
 	for (i = 2;
 	     (loongson2_clockmod_table[i].frequency != CPUFREQ_TABLE_END);
 	     i++)
 		loongson2_clockmod_table[i].frequency = (rate * i) / 8;
+
+	ret = clk_set_rate(cpuclk, rate);
+	if (ret) {
+		clk_put(cpuclk);
+		return ret;
+	}
 
 	policy->cur = loongson2_cpufreq_get(policy->cpu);
 
@@ -200,6 +202,7 @@ static void loongson2_cpu_wait(void)
 	LOONGSON_CHIPCFG0 &= ~0x7;	/* Put CPU into wait mode */
 	LOONGSON_CHIPCFG0 = cpu_freq;	/* Restore CPU state */
 	spin_unlock_irqrestore(&loongson2_wait_lock, flags);
+	local_irq_enable();
 }
 
 static int __init cpufreq_init(void)

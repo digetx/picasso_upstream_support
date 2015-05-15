@@ -691,6 +691,7 @@ struct backref_node *build_backref_tree(struct reloc_control *rc,
 	int cowonly;
 	int ret;
 	int err = 0;
+	bool need_check = true;
 
 	path1 = btrfs_alloc_path();
 	path2 = btrfs_alloc_path();
@@ -914,6 +915,7 @@ again:
 			cur->bytenr);
 
 		lower = cur;
+		need_check = true;
 		for (; level < BTRFS_MAX_LEVEL; level++) {
 			if (!path2->nodes[level]) {
 				BUG_ON(btrfs_root_bytenr(&root->root_item) !=
@@ -957,18 +959,19 @@ again:
 
 				/*
 				 * add the block to pending list if we
-				 * need check its backrefs. only block
-				 * at 'cur->level + 1' is added to the
-				 * tail of pending list. this guarantees
-				 * we check backrefs from lower level
-				 * blocks to upper level blocks.
+				 * need check its backrefs, we only do this once
+				 * while walking up a tree as we will catch
+				 * anything else later on.
 				 */
-				if (!upper->checked &&
-				    level == cur->level + 1) {
+				if (!upper->checked && need_check) {
+					need_check = false;
 					list_add_tail(&edge->list[UPPER],
 						      &list);
-				} else
+				} else {
+					if (upper->checked)
+						need_check = true;
 					INIT_LIST_HEAD(&edge->list[UPPER]);
+				}
 			} else {
 				upper = rb_entry(rb_node, struct backref_node,
 						 rb_node);
@@ -1773,7 +1776,7 @@ again:
 			if (!eb || !extent_buffer_uptodate(eb)) {
 				ret = (!eb) ? -ENOMEM : -EIO;
 				free_extent_buffer(eb);
-				return ret;
+				break;
 			}
 			btrfs_tree_lock(eb);
 			if (cow) {
@@ -3350,6 +3353,11 @@ static int delete_block_group_cache(struct btrfs_fs_info *fs_info,
 	}
 
 truncate:
+	ret = btrfs_check_trunc_cache_free_space(root,
+						 &fs_info->global_block_rsv);
+	if (ret)
+		goto out;
+
 	path = btrfs_alloc_path();
 	if (!path) {
 		ret = -ENOMEM;
@@ -4077,7 +4085,7 @@ out:
 	return inode;
 }
 
-static struct reloc_control *alloc_reloc_control(void)
+static struct reloc_control *alloc_reloc_control(struct btrfs_fs_info *fs_info)
 {
 	struct reloc_control *rc;
 
@@ -4088,7 +4096,8 @@ static struct reloc_control *alloc_reloc_control(void)
 	INIT_LIST_HEAD(&rc->reloc_roots);
 	backref_cache_init(&rc->backref_cache);
 	mapping_tree_init(&rc->reloc_root_tree);
-	extent_io_tree_init(&rc->processed_blocks, NULL);
+	extent_io_tree_init(&rc->processed_blocks,
+			    fs_info->btree_inode->i_mapping);
 	return rc;
 }
 
@@ -4105,7 +4114,7 @@ int btrfs_relocate_block_group(struct btrfs_root *extent_root, u64 group_start)
 	int rw = 0;
 	int err = 0;
 
-	rc = alloc_reloc_control();
+	rc = alloc_reloc_control(fs_info);
 	if (!rc)
 		return -ENOMEM;
 
@@ -4306,7 +4315,7 @@ int btrfs_recover_relocation(struct btrfs_root *root)
 	if (list_empty(&reloc_roots))
 		goto out;
 
-	rc = alloc_reloc_control();
+	rc = alloc_reloc_control(root->fs_info);
 	if (!rc) {
 		err = -ENOMEM;
 		goto out;

@@ -244,8 +244,10 @@ int __frontswap_store(struct page *page)
 		  the (older) page from frontswap
 		 */
 		inc_frontswap_failed_stores();
-		if (dup)
+		if (dup) {
 			__frontswap_clear(sis, offset);
+			frontswap_ops->invalidate_page(type, offset);
+		}
 	}
 	if (frontswap_writethrough_enabled)
 		/* report failure so swap also writes to swap device */
@@ -319,7 +321,7 @@ void __frontswap_invalidate_area(unsigned type)
 			return;
 		frontswap_ops->invalidate_area(type);
 		atomic_set(&sis->frontswap_pages, 0);
-		memset(sis->frontswap_map, 0, sis->max / sizeof(long));
+		bitmap_zero(sis->frontswap_map, sis->max);
 	}
 	clear_bit(type, need_init);
 }

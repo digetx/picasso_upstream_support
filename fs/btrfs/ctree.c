@@ -951,10 +951,12 @@ static noinline int update_ref_for_cow(struct btrfs_trans_handle *trans,
 			BUG_ON(ret); /* -ENOMEM */
 		}
 		if (new_flags != 0) {
+			int level = btrfs_header_level(buf);
+
 			ret = btrfs_set_disk_extent_flags(trans, root,
 							  buf->start,
 							  buf->len,
-							  new_flags, 0);
+							  new_flags, level, 0);
 			if (ret)
 				return ret;
 		}
@@ -1087,7 +1089,8 @@ static noinline int __btrfs_cow_block(struct btrfs_trans_handle *trans,
 		btrfs_set_node_ptr_generation(parent, parent_slot,
 					      trans->transid);
 		btrfs_mark_buffer_dirty(parent);
-		tree_mod_log_free_eb(root->fs_info, buf);
+		if (last_ref)
+			tree_mod_log_free_eb(root->fs_info, buf);
 		btrfs_free_tree_block(trans, root, buf, parent_start,
 				      last_ref);
 	}
@@ -1159,8 +1162,8 @@ __tree_mod_log_oldest_root(struct btrfs_fs_info *fs_info,
  * time_seq).
  */
 static void
-__tree_mod_log_rewind(struct extent_buffer *eb, u64 time_seq,
-		      struct tree_mod_elem *first_tm)
+__tree_mod_log_rewind(struct btrfs_fs_info *fs_info, struct extent_buffer *eb,
+		      u64 time_seq, struct tree_mod_elem *first_tm)
 {
 	u32 n;
 	struct rb_node *next;
@@ -1170,6 +1173,7 @@ __tree_mod_log_rewind(struct extent_buffer *eb, u64 time_seq,
 	unsigned long p_size = sizeof(struct btrfs_key_ptr);
 
 	n = btrfs_header_nritems(eb);
+	tree_mod_log_read_lock(fs_info);
 	while (tm && tm->seq >= time_seq) {
 		/*
 		 * all the operations are recorded with the operator used for
@@ -1224,6 +1228,7 @@ __tree_mod_log_rewind(struct extent_buffer *eb, u64 time_seq,
 		if (tm->index != first_tm->index)
 			break;
 	}
+	tree_mod_log_read_unlock(fs_info);
 	btrfs_set_header_nritems(eb, n);
 }
 
@@ -1272,7 +1277,7 @@ tree_mod_log_rewind(struct btrfs_fs_info *fs_info, struct extent_buffer *eb,
 
 	extent_buffer_get(eb_rewin);
 	btrfs_tree_read_lock(eb_rewin);
-	__tree_mod_log_rewind(eb_rewin, time_seq, tm);
+	__tree_mod_log_rewind(fs_info, eb_rewin, time_seq, tm);
 	WARN_ON(btrfs_header_nritems(eb_rewin) >
 		BTRFS_NODEPTRS_PER_BLOCK(fs_info->tree_root));
 
@@ -1348,7 +1353,7 @@ get_old_root(struct btrfs_root *root, u64 time_seq)
 		btrfs_set_header_generation(eb, old_generation);
 	}
 	if (tm)
-		__tree_mod_log_rewind(eb, time_seq, tm);
+		__tree_mod_log_rewind(root->fs_info, eb, time_seq, tm);
 	else
 		WARN_ON(btrfs_header_level(eb) != 0);
 	WARN_ON(btrfs_header_nritems(eb) > BTRFS_NODEPTRS_PER_BLOCK(root));

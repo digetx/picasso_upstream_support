@@ -32,8 +32,12 @@
 		ssc0 = &ssc0;
 	};
 	cpus {
-		cpu@0 {
-			compatible = "arm,arm926ejs";
+		#address-cells = <0>;
+		#size-cells = <0>;
+
+		cpu {
+			compatible = "arm,arm926ej-s";
+			device_type = "cpu";
 		};
 	};
 
@@ -264,7 +268,7 @@
 						atmel,pins =
 							<0 10 0x2 0x0	/* PA10 periph B */
 							 0 11 0x2 0x0	/* PA11 periph B */
-							 0 24 0x2 0x0	/* PA24 periph B */
+							 0 22 0x2 0x0	/* PA22 periph B */
 							 0 25 0x2 0x0	/* PA25 periph B */
 							 0 26 0x2 0x0	/* PA26 periph B */
 							 0 27 0x2 0x0	/* PA27 periph B */
@@ -337,6 +341,14 @@
 							<1 0 0x1 0x0	/* PB0 periph A SPI1_MISO pin */
 							 1 1 0x1 0x0	/* PB1 periph A SPI1_MOSI pin */
 							 1 2 0x1 0x0>;	/* PB2 periph A SPI1_SPCK pin */
+					};
+				};
+
+				i2c_gpio0 {
+					pinctrl_i2c_gpio0: i2c_gpio0-0 {
+						atmel,pins =
+							<0 23 0x0 0x3   /* PA23 gpio I2C_SDA pin */
+							 0 24 0x0 0x3>; /* PA24 gpio I2C_SCL pin */
 					};
 				};
 
@@ -592,6 +604,8 @@
 		i2c-gpio,delay-us = <2>;	/* ~100 kHz */
 		#address-cells = <1>;
 		#size-cells = <0>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_i2c_gpio0>;
 		status = "disabled";
 	};
 };

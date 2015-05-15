@@ -545,8 +545,9 @@ static void scrub_print_warning(const char *errstr, struct scrub_block *sblock)
 
 	if (flags & BTRFS_EXTENT_FLAG_TREE_BLOCK) {
 		do {
-			ret = tree_backref_for_extent(&ptr, eb, ei, item_size,
-							&ref_root, &ref_level);
+			ret = tree_backref_for_extent(&ptr, eb, &found_key, ei,
+						      item_size, &ref_root,
+						      &ref_level);
 			printk_in_rcu(KERN_WARNING
 				"btrfs: %s at logical %llu on dev %s, "
 				"sector %llu: metadata %s (level %d) in tree "
@@ -1296,7 +1297,7 @@ static void scrub_recheck_block(struct btrfs_fs_info *fs_info,
 		}
 
 		WARN_ON(!page->page);
-		bio = bio_alloc(GFP_NOFS, 1);
+		bio = btrfs_io_bio_alloc(GFP_NOFS, 1);
 		if (!bio) {
 			page->io_error = 1;
 			sblock->no_io_error_seen = 0;
@@ -1431,7 +1432,7 @@ static int scrub_repair_page_from_good_copy(struct scrub_block *sblock_bad,
 			return -EIO;
 		}
 
-		bio = bio_alloc(GFP_NOFS, 1);
+		bio = btrfs_io_bio_alloc(GFP_NOFS, 1);
 		if (!bio)
 			return -EIO;
 		bio->bi_bdev = page_bad->dev->bdev;
@@ -1522,7 +1523,7 @@ again:
 		sbio->dev = wr_ctx->tgtdev;
 		bio = sbio->bio;
 		if (!bio) {
-			bio = bio_alloc(GFP_NOFS, wr_ctx->pages_per_wr_bio);
+			bio = btrfs_io_bio_alloc(GFP_NOFS, wr_ctx->pages_per_wr_bio);
 			if (!bio) {
 				mutex_unlock(&wr_ctx->wr_lock);
 				return -ENOMEM;
@@ -1930,7 +1931,7 @@ again:
 		sbio->dev = spage->dev;
 		bio = sbio->bio;
 		if (!bio) {
-			bio = bio_alloc(GFP_NOFS, sctx->pages_per_rd_bio);
+			bio = btrfs_io_bio_alloc(GFP_NOFS, sctx->pages_per_rd_bio);
 			if (!bio)
 				return -ENOMEM;
 			sbio->bio = bio;
@@ -2501,7 +2502,7 @@ again:
 			ret = scrub_extent(sctx, extent_logical, extent_len,
 					   extent_physical, extent_dev, flags,
 					   generation, extent_mirror_num,
-					   extent_physical);
+					   extent_logical - logical + physical);
 			if (ret)
 				goto out;
 
@@ -3307,7 +3308,7 @@ static int write_page_nocow(struct scrub_ctx *sctx,
 			"btrfs: scrub write_page_nocow(bdev == NULL) is unexpected!\n");
 		return -EIO;
 	}
-	bio = bio_alloc(GFP_NOFS, 1);
+	bio = btrfs_io_bio_alloc(GFP_NOFS, 1);
 	if (!bio) {
 		spin_lock(&sctx->stat_lock);
 		sctx->stat.malloc_errors++;

@@ -213,7 +213,7 @@ static inline unsigned char tt_start_uframe(struct ehci_hcd *ehci, __hc32 mask)
 }
 
 static const unsigned char
-max_tt_usecs[] = { 125, 125, 125, 125, 125, 125, 125, 25 };
+max_tt_usecs[] = { 125, 125, 125, 125, 125, 125, 30, 0 };
 
 /* carryover low/fullspeed bandwidth that crosses uframe boundries */
 static inline void carryover_tt_bandwidth(unsigned short tt_usecs[8])
@@ -646,6 +646,10 @@ static void end_unlink_intr(struct ehci_hcd *ehci, struct ehci_qh *qh)
 	/* reschedule QH iff another request is queued */
 	if (!list_empty(&qh->qtd_list) && ehci->rh_state == EHCI_RH_RUNNING) {
 		rc = qh_schedule(ehci, qh);
+		if (rc == 0) {
+			qh_refresh(ehci, qh);
+			qh_link_periodic(ehci, qh);
+		}
 
 		/* An error here likely indicates handshake failure
 		 * or no space left in the schedule.  Neither fault
@@ -653,9 +657,10 @@ static void end_unlink_intr(struct ehci_hcd *ehci, struct ehci_qh *qh)
 		 *
 		 * FIXME kill the now-dysfunctional queued urbs
 		 */
-		if (rc != 0)
+		else {
 			ehci_err(ehci, "can't reschedule qh %p, err %d\n",
 					qh, rc);
+		}
 	}
 
 	/* maybe turn off periodic schedule */
@@ -1386,21 +1391,20 @@ iso_stream_schedule (
 
 		/* Behind the scheduling threshold? */
 		if (unlikely(start < next)) {
+			unsigned now2 = (now - base) & (mod - 1);
 
 			/* USB_ISO_ASAP: Round up to the first available slot */
 			if (urb->transfer_flags & URB_ISO_ASAP)
 				start += (next - start + period - 1) & -period;
 
 			/*
-			 * Not ASAP: Use the next slot in the stream.  If
-			 * the entire URB falls before the threshold, fail.
+			 * Not ASAP: Use the next slot in the stream,
+			 * no matter what.
 			 */
-			else if (start + span - period < next) {
-				ehci_dbg(ehci, "iso urb late %p (%u+%u < %u)\n",
+			else if (start + span - period < now2) {
+				ehci_dbg(ehci, "iso underrun %p (%u+%u < %u)\n",
 						urb, start + base,
-						span - period, next + base);
-				status = -EXDEV;
-				goto fail;
+						span - period, now2 + base);
 			}
 		}
 

@@ -339,6 +339,8 @@ nouveau_drm_load(struct drm_device *dev, unsigned long flags)
 	if (ret)
 		goto fail_device;
 
+	dev->irq_enabled = true;
+
 	/* workaround an odd issue on nvc1 by disabling the device's
 	 * nosnoop capability.  hopefully won't cause issues until a
 	 * better fix is found - assuming there is one...
@@ -426,6 +428,7 @@ nouveau_drm_remove(struct pci_dev *pdev)
 	struct nouveau_drm *drm = nouveau_drm(dev);
 	struct nouveau_object *device;
 
+	dev->irq_enabled = false;
 	device = drm->client.base.device;
 	drm_put_dev(dev);
 
@@ -453,18 +456,32 @@ nouveau_do_suspend(struct drm_device *dev)
 	NV_INFO(drm, "evicting buffers...\n");
 	ttm_bo_evict_mm(&drm->ttm.bdev, TTM_PL_VRAM);
 
+	NV_INFO(drm, "waiting for kernel channels to go idle...\n");
+	if (drm->cechan) {
+		ret = nouveau_channel_idle(drm->cechan);
+		if (ret)
+			return ret;
+	}
+
+	if (drm->channel) {
+		ret = nouveau_channel_idle(drm->channel);
+		if (ret)
+			return ret;
+	}
+
+	NV_INFO(drm, "suspending client object trees...\n");
 	if (drm->fence && nouveau_fence(drm)->suspend) {
 		if (!nouveau_fence(drm)->suspend(drm))
 			return -ENOMEM;
 	}
 
-	NV_INFO(drm, "suspending client object trees...\n");
 	list_for_each_entry(cli, &drm->clients, head) {
 		ret = nouveau_client_fini(&cli->base, true);
 		if (ret)
 			goto fail_client;
 	}
 
+	NV_INFO(drm, "suspending kernel object tree...\n");
 	ret = nouveau_client_fini(&drm->client.base, true);
 	if (ret)
 		goto fail_client;
@@ -514,16 +531,17 @@ nouveau_do_resume(struct drm_device *dev)
 
 	nouveau_agp_reset(drm);
 
-	NV_INFO(drm, "resuming client object trees...\n");
+	NV_INFO(drm, "resuming kernel object tree...\n");
 	nouveau_client_init(&drm->client.base);
 	nouveau_agp_init(drm);
+
+	NV_INFO(drm, "resuming client object trees...\n");
+	if (drm->fence && nouveau_fence(drm)->resume)
+		nouveau_fence(drm)->resume(drm);
 
 	list_for_each_entry(cli, &drm->clients, head) {
 		nouveau_client_init(&cli->base);
 	}
-
-	if (drm->fence && nouveau_fence(drm)->resume)
-		nouveau_fence(drm)->resume(drm);
 
 	nouveau_run_vbios_init(dev);
 	nouveau_pm_resume(dev);

@@ -428,34 +428,27 @@ void smp_stop_cpu(void)
  * This is the main routine where commands issued by other
  * cpus are handled.
  */
+static void smp_handle_ext_call(void)
+{
+	unsigned long bits;
+
+	/* handle bit signal external calls */
+	bits = xchg(&pcpu_devices[smp_processor_id()].ec_mask, 0);
+	if (test_bit(ec_stop_cpu, &bits))
+		smp_stop_cpu();
+	if (test_bit(ec_schedule, &bits))
+		scheduler_ipi();
+	if (test_bit(ec_call_function, &bits))
+		generic_smp_call_function_interrupt();
+	if (test_bit(ec_call_function_single, &bits))
+		generic_smp_call_function_single_interrupt();
+}
+
 static void do_ext_call_interrupt(struct ext_code ext_code,
 				  unsigned int param32, unsigned long param64)
 {
-	unsigned long bits;
-	int cpu;
-
-	cpu = smp_processor_id();
-	if (ext_code.code == 0x1202)
-		inc_irq_stat(IRQEXT_EXC);
-	else
-		inc_irq_stat(IRQEXT_EMS);
-	/*
-	 * handle bit signal external calls
-	 */
-	bits = xchg(&pcpu_devices[cpu].ec_mask, 0);
-
-	if (test_bit(ec_stop_cpu, &bits))
-		smp_stop_cpu();
-
-	if (test_bit(ec_schedule, &bits))
-		scheduler_ipi();
-
-	if (test_bit(ec_call_function, &bits))
-		generic_smp_call_function_interrupt();
-
-	if (test_bit(ec_call_function_single, &bits))
-		generic_smp_call_function_single_interrupt();
-
+	inc_irq_stat(ext_code.code == 0x1202 ? IRQEXT_EXC : IRQEXT_EMS);
+	smp_handle_ext_call();
 }
 
 void arch_send_call_function_ipi_mask(const struct cpumask *mask)
@@ -645,7 +638,7 @@ static int __cpuinit __smp_rescan_cpus(struct sclp_cpu_info *info,
 			continue;
 		pcpu = pcpu_devices + cpu;
 		pcpu->address = info->cpu[i].address;
-		pcpu->state = (cpu >= info->configured) ?
+		pcpu->state = (i >= info->configured) ?
 			CPU_STATE_STANDBY : CPU_STATE_CONFIGURED;
 		smp_cpu_set_polarization(cpu, POLARIZATION_UNKNOWN);
 		set_cpu_present(cpu, true);
@@ -760,6 +753,8 @@ int __cpu_disable(void)
 {
 	unsigned long cregs[16];
 
+	/* Handle possible pending IPIs */
+	smp_handle_ext_call();
 	set_cpu_online(smp_processor_id(), false);
 	/* Disable pseudo page faults on this cpu. */
 	pfault_fini();
@@ -938,7 +933,7 @@ static ssize_t show_idle_count(struct device *dev,
 		idle_count = ACCESS_ONCE(idle->idle_count);
 		if (ACCESS_ONCE(idle->clock_idle_enter))
 			idle_count++;
-	} while ((sequence & 1) || (idle->sequence != sequence));
+	} while ((sequence & 1) || (ACCESS_ONCE(idle->sequence) != sequence));
 	return sprintf(buf, "%llu\n", idle_count);
 }
 static DEVICE_ATTR(idle_count, 0444, show_idle_count, NULL);
@@ -956,7 +951,7 @@ static ssize_t show_idle_time(struct device *dev,
 		idle_time = ACCESS_ONCE(idle->idle_time);
 		idle_enter = ACCESS_ONCE(idle->clock_idle_enter);
 		idle_exit = ACCESS_ONCE(idle->clock_idle_exit);
-	} while ((sequence & 1) || (idle->sequence != sequence));
+	} while ((sequence & 1) || (ACCESS_ONCE(idle->sequence) != sequence));
 	idle_time += idle_enter ? ((idle_exit ? : now) - idle_enter) : 0;
 	return sprintf(buf, "%llu\n", idle_time >> 12);
 }

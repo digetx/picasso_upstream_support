@@ -1404,6 +1404,8 @@ static int snd_pcm_do_drain_init(struct snd_pcm_substream *substream, int state)
 			if (! snd_pcm_playback_empty(substream)) {
 				snd_pcm_do_start(substream, SNDRV_PCM_STATE_DRAINING);
 				snd_pcm_post_start(substream, SNDRV_PCM_STATE_DRAINING);
+			} else {
+				runtime->status->state = SNDRV_PCM_STATE_SETUP;
 			}
 			break;
 		case SNDRV_PCM_STATE_RUNNING:
@@ -1649,6 +1651,7 @@ static int snd_pcm_link(struct snd_pcm_substream *substream, int fd)
 	}
 	if (!snd_pcm_stream_linked(substream)) {
 		substream->group = group;
+		group = NULL;
 		spin_lock_init(&substream->group->lock);
 		INIT_LIST_HEAD(&substream->group->substreams);
 		list_add_tail(&substream->link_list, &substream->group->substreams);
@@ -1663,8 +1666,7 @@ static int snd_pcm_link(struct snd_pcm_substream *substream, int fd)
  _nolock:
 	snd_card_unref(substream1->pcm->card);
 	fput_light(file, fput_needed);
-	if (res < 0)
-		kfree(group);
+	kfree(group);
 	return res;
 }
 
@@ -3197,7 +3199,7 @@ static const struct vm_operations_struct snd_pcm_vm_ops_data_fault = {
 
 #ifndef ARCH_HAS_DMA_MMAP_COHERENT
 /* This should be defined / handled globally! */
-#ifdef CONFIG_ARM
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
 #define ARCH_HAS_DMA_MMAP_COHERENT
 #endif
 #endif

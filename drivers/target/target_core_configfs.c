@@ -1584,6 +1584,13 @@ static struct target_core_configfs_attribute target_core_attr_dev_udev_path = {
 	.store	= target_core_store_dev_udev_path,
 };
 
+static ssize_t target_core_show_dev_enable(void *p, char *page)
+{
+	struct se_device *dev = p;
+
+	return snprintf(page, PAGE_SIZE, "%d\n", !!(dev->dev_flags & DF_CONFIGURED));
+}
+
 static ssize_t target_core_store_dev_enable(
 	void *p,
 	const char *page,
@@ -1609,8 +1616,8 @@ static ssize_t target_core_store_dev_enable(
 static struct target_core_configfs_attribute target_core_attr_dev_enable = {
 	.attr	= { .ca_owner = THIS_MODULE,
 		    .ca_name = "enable",
-		    .ca_mode = S_IWUSR },
-	.show	= NULL,
+		    .ca_mode =  S_IRUGO | S_IWUSR },
+	.show	= target_core_show_dev_enable,
 	.store	= target_core_store_dev_enable,
 };
 
@@ -2026,6 +2033,11 @@ static ssize_t target_core_alua_tg_pt_gp_store_attr_alua_access_state(
 		pr_err("Unable to do implict ALUA on non valid"
 			" tg_pt_gp ID: %hu\n", tg_pt_gp->tg_pt_gp_valid_id);
 		return -EINVAL;
+	}
+	if (!(dev->dev_flags & DF_CONFIGURED)) {
+		pr_err("Unable to set alua_access_state while device is"
+		       " not configured\n");
+		return -ENODEV;
 	}
 
 	ret = strict_strtoul(page, 0, &tmp);

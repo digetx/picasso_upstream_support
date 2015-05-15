@@ -75,13 +75,14 @@ ENTRY(cpu_v7_do_idle)
 ENDPROC(cpu_v7_do_idle)
 
 ENTRY(cpu_v7_dcache_clean_area)
-	ALT_SMP(mov	pc, lr)			@ MP extensions imply L1 PTW
-	ALT_UP(W(nop))
-	dcache_line_size r2, r3
-1:	mcr	p15, 0, r0, c7, c10, 1		@ clean D entry
+	ALT_SMP(W(nop))			@ MP extensions imply L1 PTW
+	ALT_UP_B(1f)
+	mov	pc, lr
+1:	dcache_line_size r2, r3
+2:	mcr	p15, 0, r0, c7, c10, 1		@ clean D entry
 	add	r0, r0, r2
 	subs	r1, r1, r2
-	bhi	1b
+	bhi	2b
 	dsb
 	mov	pc, lr
 ENDPROC(cpu_v7_dcache_clean_area)
@@ -140,6 +141,29 @@ ENTRY(cpu_v7_do_resume)
 ENDPROC(cpu_v7_do_resume)
 #endif
 
+#ifdef CONFIG_CPU_PJ4B
+	globl_equ	cpu_pj4b_switch_mm,     cpu_v7_switch_mm
+	globl_equ	cpu_pj4b_set_pte_ext,	cpu_v7_set_pte_ext
+	globl_equ	cpu_pj4b_proc_init,	cpu_v7_proc_init
+	globl_equ	cpu_pj4b_proc_fin, 	cpu_v7_proc_fin
+	globl_equ	cpu_pj4b_reset,	   	cpu_v7_reset
+#ifdef CONFIG_PJ4B_ERRATA_4742
+ENTRY(cpu_pj4b_do_idle)
+	dsb					@ WFI may enter a low-power mode
+	wfi
+	dsb					@barrier
+	mov	pc, lr
+ENDPROC(cpu_pj4b_do_idle)
+#else
+	globl_equ	cpu_pj4b_do_idle,  	cpu_v7_do_idle
+#endif
+	globl_equ	cpu_pj4b_dcache_clean_area,	cpu_v7_dcache_clean_area
+	globl_equ	cpu_pj4b_do_suspend,	cpu_v7_do_suspend
+	globl_equ	cpu_pj4b_do_resume,	cpu_v7_do_resume
+	globl_equ	cpu_pj4b_suspend_size,	cpu_v7_suspend_size
+
+#endif
+
 	__CPUINIT
 
 /*
@@ -177,7 +201,6 @@ __v7_pj4b_setup:
 /* Auxiliary Debug Modes Control 1 Register */
 #define PJ4B_STATIC_BP (1 << 2) /* Enable Static BP */
 #define PJ4B_INTER_PARITY (1 << 8) /* Disable Internal Parity Handling */
-#define PJ4B_BCK_OFF_STREX (1 << 5) /* Enable the back off of STREX instr */
 #define PJ4B_CLEAN_LINE (1 << 16) /* Disable data transfer for clean line */
 
 /* Auxiliary Debug Modes Control 2 Register */
@@ -200,7 +223,6 @@ __v7_pj4b_setup:
 	/* Auxiliary Debug Modes Control 1 Register */
 	mrc	p15, 1,	r0, c15, c1, 1
 	orr     r0, r0, #PJ4B_CLEAN_LINE
-	orr     r0, r0, #PJ4B_BCK_OFF_STREX
 	orr     r0, r0, #PJ4B_INTER_PARITY
 	bic	r0, r0, #PJ4B_STATIC_BP
 	mcr	p15, 1,	r0, c15, c1, 1
@@ -305,7 +327,6 @@ __v7_setup:
 
 3:	mov	r10, #0
 	mcr	p15, 0, r10, c7, c5, 0		@ I+BTB cache invalidate
-	dsb
 #ifdef CONFIG_MMU
 	mcr	p15, 0, r10, c8, c7, 0		@ invalidate I + D TLBs
 	v7_ttb_setup r10, r4, r8, r5		@ TTBCR, TTBRx setup
@@ -314,6 +335,7 @@ __v7_setup:
 	mcr	p15, 0, r5, c10, c2, 0		@ write PRRR
 	mcr	p15, 0, r6, c10, c2, 1		@ write NMRR
 #endif
+	dsb					@ Complete invalidations
 #ifndef CONFIG_ARM_THUMBEE
 	mrc	p15, 0, r0, c0, c1, 0		@ read ID_PFR0 for ThumbEE
 	and	r0, r0, #(0xf << 12)		@ ThumbEE enabled field
@@ -350,6 +372,9 @@ __v7_setup_stack:
 
 	@ define struct processor (see <asm/proc-fns.h> and proc-macros.S)
 	define_processor_functions v7, dabort=v7_early_abort, pabort=v7_pabort, suspend=1
+#ifdef CONFIG_CPU_PJ4B
+	define_processor_functions pj4b, dabort=v7_early_abort, pabort=v7_pabort, suspend=1
+#endif
 
 	.section ".rodata"
 
@@ -362,7 +387,7 @@ __v7_setup_stack:
 	/*
 	 * Standard v7 proc info content
 	 */
-.macro __v7_proc initfunc, mm_mmuflags = 0, io_mmuflags = 0, hwcaps = 0
+.macro __v7_proc initfunc, mm_mmuflags = 0, io_mmuflags = 0, hwcaps = 0, proc_fns = v7_processor_functions
 	ALT_SMP(.long	PMD_TYPE_SECT | PMD_SECT_AP_WRITE | PMD_SECT_AP_READ | \
 			PMD_SECT_AF | PMD_FLAGS_SMP | \mm_mmuflags)
 	ALT_UP(.long	PMD_TYPE_SECT | PMD_SECT_AP_WRITE | PMD_SECT_AP_READ | \
@@ -375,7 +400,7 @@ __v7_setup_stack:
 	.long	HWCAP_SWP | HWCAP_HALF | HWCAP_THUMB | HWCAP_FAST_MULT | \
 		HWCAP_EDSP | HWCAP_TLS | \hwcaps
 	.long	cpu_v7_name
-	.long	v7_processor_functions
+	.long	\proc_fns
 	.long	v7wbi_tlb_fns
 	.long	v6_user_fns
 	.long	v7_cache_fns
@@ -407,12 +432,14 @@ __v7_ca9mp_proc_info:
 	/*
 	 * Marvell PJ4B processor.
 	 */
+#ifdef CONFIG_CPU_PJ4B
 	.type   __v7_pj4b_proc_info, #object
 __v7_pj4b_proc_info:
-	.long	0x562f5840
-	.long	0xfffffff0
-	__v7_proc __v7_pj4b_setup
+	.long	0x560f5800
+	.long	0xff0fff00
+	__v7_proc __v7_pj4b_setup, proc_fns = pj4b_processor_functions
 	.size	__v7_pj4b_proc_info, . - __v7_pj4b_proc_info
+#endif
 
 	/*
 	 * ARM Ltd. Cortex A7 processor.

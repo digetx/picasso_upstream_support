@@ -390,11 +390,16 @@ n:
  *      ld	rY,ADDROFF(name)(rX)
  */
 #ifdef __powerpc64__
+#ifdef HAVE_AS_ATHIGH
+#define __AS_ATHIGH high
+#else
+#define __AS_ATHIGH h
+#endif
 #define LOAD_REG_IMMEDIATE(reg,expr)		\
 	lis     reg,(expr)@highest;		\
 	ori     reg,reg,(expr)@higher;	\
 	rldicr  reg,reg,32,31;		\
-	oris    reg,reg,(expr)@h;		\
+	oris    reg,reg,(expr)@__AS_ATHIGH;	\
 	ori     reg,reg,(expr)@l;
 
 #define LOAD_REG_ADDR(reg,name)			\
@@ -522,6 +527,17 @@ END_FTR_SECTION_NESTED(CPU_FTR_HAS_PPR,CPU_FTR_HAS_PPR,946)
 #else
 #define PPC440EP_ERR42
 #endif
+
+/* The following stops all load and store data streams associated with stream
+ * ID (ie. streams created explicitly).  The embedded and server mnemonics for
+ * dcbt are different so we use machine "power4" here explicitly.
+ */
+#define DCBT_STOP_ALL_STREAM_IDS(scratch)	\
+.machine push ;					\
+.machine "power4" ;				\
+       lis     scratch,0x60000000@h;		\
+       dcbt    r0,scratch,0b01010;		\
+.machine pop
 
 /*
  * toreal/fromreal/tophys/tovirt macros. 32-bit BookE makes them

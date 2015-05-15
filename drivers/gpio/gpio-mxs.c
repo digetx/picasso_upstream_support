@@ -214,7 +214,8 @@ static void __init mxs_gpio_init_gc(struct mxs_gpio_port *port, int irq_base)
 	ct->regs.ack = PINCTRL_IRQSTAT(port) + MXS_CLR;
 	ct->regs.mask = PINCTRL_IRQEN(port);
 
-	irq_setup_generic_chip(gc, IRQ_MSK(32), 0, IRQ_NOREQUEST, 0);
+	irq_setup_generic_chip(gc, IRQ_MSK(32), IRQ_GC_INIT_NESTED_LOCK,
+			       IRQ_NOREQUEST, 0);
 }
 
 static int mxs_gpio_to_irq(struct gpio_chip *gc, unsigned offset)
@@ -326,7 +327,8 @@ static int mxs_gpio_probe(struct platform_device *pdev)
 
 	err = bgpio_init(&port->bgc, &pdev->dev, 4,
 			 port->base + PINCTRL_DIN(port),
-			 port->base + PINCTRL_DOUT(port), NULL,
+			 port->base + PINCTRL_DOUT(port) + MXS_SET,
+			 port->base + PINCTRL_DOUT(port) + MXS_CLR,
 			 port->base + PINCTRL_DOE(port), NULL, 0);
 	if (err)
 		goto out_irqdesc_free;

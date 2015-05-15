@@ -125,15 +125,16 @@ static void ulog_send(struct ulog_net *ulog, unsigned int nlgroupnum)
 /* timer function to flush queue in flushtimeout time */
 static void ulog_timer(unsigned long data)
 {
+	unsigned int groupnum = *((unsigned int *)data);
 	struct ulog_net *ulog = container_of((void *)data,
 					     struct ulog_net,
-					     nlgroup[*(unsigned int *)data]);
+					     nlgroup[groupnum]);
 	pr_debug("timer function called, calling ulog_send\n");
 
 	/* lock to protect against somebody modifying our structure
 	 * from ipt_ulog_target at the same time */
 	spin_lock_bh(&ulog->lock);
-	ulog_send(ulog, data);
+	ulog_send(ulog, groupnum);
 	spin_unlock_bh(&ulog->lock);
 }
 
@@ -162,7 +163,8 @@ static struct sk_buff *ulog_alloc_skb(unsigned int size)
 	return skb;
 }
 
-static void ipt_ulog_packet(unsigned int hooknum,
+static void ipt_ulog_packet(struct net *net,
+			    unsigned int hooknum,
 			    const struct sk_buff *skb,
 			    const struct net_device *in,
 			    const struct net_device *out,
@@ -174,7 +176,6 @@ static void ipt_ulog_packet(unsigned int hooknum,
 	size_t size, copy_len;
 	struct nlmsghdr *nlh;
 	struct timeval tv;
-	struct net *net = dev_net(in ? in : out);
 	struct ulog_net *ulog = ulog_pernet(net);
 
 	/* ffs == find first bit set, necessary because userspace
@@ -219,6 +220,7 @@ static void ipt_ulog_packet(unsigned int hooknum,
 	ub->qlen++;
 
 	pm = nlmsg_data(nlh);
+	memset(pm, 0, sizeof(*pm));
 
 	/* We might not have a timestamp, get one */
 	if (skb->tstamp.tv64 == 0)
@@ -231,12 +233,12 @@ static void ipt_ulog_packet(unsigned int hooknum,
 	put_unaligned(tv.tv_usec, &pm->timestamp_usec);
 	put_unaligned(skb->mark, &pm->mark);
 	pm->hook = hooknum;
-	if (prefix != NULL)
-		strncpy(pm->prefix, prefix, sizeof(pm->prefix));
+	if (prefix != NULL) {
+		strncpy(pm->prefix, prefix, sizeof(pm->prefix) - 1);
+		pm->prefix[sizeof(pm->prefix) - 1] = '\0';
+	}
 	else if (loginfo->prefix[0] != '\0')
 		strncpy(pm->prefix, loginfo->prefix, sizeof(pm->prefix));
-	else
-		*(pm->prefix) = '\0';
 
 	if (in && in->hard_header_len > 0 &&
 	    skb->mac_header != skb->network_header &&
@@ -248,13 +250,9 @@ static void ipt_ulog_packet(unsigned int hooknum,
 
 	if (in)
 		strncpy(pm->indev_name, in->name, sizeof(pm->indev_name));
-	else
-		pm->indev_name[0] = '\0';
 
 	if (out)
 		strncpy(pm->outdev_name, out->name, sizeof(pm->outdev_name));
-	else
-		pm->outdev_name[0] = '\0';
 
 	/* copy_len <= skb->len, so can't fail. */
 	if (skb_copy_bits(skb, 0, pm->payload, copy_len) < 0)
@@ -291,12 +289,15 @@ alloc_failure:
 static unsigned int
 ulog_tg(struct sk_buff *skb, const struct xt_action_param *par)
 {
-	ipt_ulog_packet(par->hooknum, skb, par->in, par->out,
+	struct net *net = dev_net(par->in ? par->in : par->out);
+
+	ipt_ulog_packet(net, par->hooknum, skb, par->in, par->out,
 	                par->targinfo, NULL);
 	return XT_CONTINUE;
 }
 
-static void ipt_logfn(u_int8_t pf,
+static void ipt_logfn(struct net *net,
+		      u_int8_t pf,
 		      unsigned int hooknum,
 		      const struct sk_buff *skb,
 		      const struct net_device *in,
@@ -318,7 +319,7 @@ static void ipt_logfn(u_int8_t pf,
 		strlcpy(loginfo.prefix, prefix, sizeof(loginfo.prefix));
 	}
 
-	ipt_ulog_packet(hooknum, skb, in, out, &loginfo, prefix);
+	ipt_ulog_packet(net, hooknum, skb, in, out, &loginfo, prefix);
 }
 
 static int ulog_tg_check(const struct xt_tgchk_param *par)
@@ -402,8 +403,11 @@ static int __net_init ulog_tg_net_init(struct net *net)
 
 	spin_lock_init(&ulog->lock);
 	/* initialize ulog_buffers */
-	for (i = 0; i < ULOG_MAXNLGROUPS; i++)
-		setup_timer(&ulog->ulog_buffers[i].timer, ulog_timer, i);
+	for (i = 0; i < ULOG_MAXNLGROUPS; i++) {
+		ulog->nlgroup[i] = i;
+		setup_timer(&ulog->ulog_buffers[i].timer, ulog_timer,
+			    (unsigned long)&ulog->nlgroup[i]);
+	}
 
 	ulog->nflognl = netlink_kernel_create(net, NETLINK_NFLOG, &cfg);
 	if (!ulog->nflognl)

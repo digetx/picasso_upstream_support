@@ -347,11 +347,54 @@ static bool start_new_rx_buffer(int offset, unsigned long size, int head)
 	 * into multiple copies tend to give large frags their
 	 * own buffers as before.
 	 */
-	if ((offset + size > MAX_BUFFER_OFFSET) &&
-	    (size <= MAX_BUFFER_OFFSET) && offset && !head)
+	BUG_ON(size > MAX_BUFFER_OFFSET);
+	if ((offset + size > MAX_BUFFER_OFFSET) && offset && !head)
 		return true;
 
 	return false;
+}
+
+struct xenvif_count_slot_state {
+	unsigned long copy_off;
+	bool head;
+};
+
+unsigned int xenvif_count_frag_slots(struct xenvif *vif,
+				     unsigned long offset, unsigned long size,
+				     struct xenvif_count_slot_state *state)
+{
+	unsigned count = 0;
+
+	offset &= ~PAGE_MASK;
+
+	while (size > 0) {
+		unsigned long bytes;
+
+		bytes = PAGE_SIZE - offset;
+
+		if (bytes > size)
+			bytes = size;
+
+		if (start_new_rx_buffer(state->copy_off, bytes, state->head)) {
+			count++;
+			state->copy_off = 0;
+		}
+
+		if (state->copy_off + bytes > MAX_BUFFER_OFFSET)
+			bytes = MAX_BUFFER_OFFSET - state->copy_off;
+
+		state->copy_off += bytes;
+
+		offset += bytes;
+		size -= bytes;
+
+		if (offset == PAGE_SIZE)
+			offset = 0;
+
+		state->head = false;
+	}
+
+	return count;
 }
 
 /*
@@ -361,48 +404,39 @@ static bool start_new_rx_buffer(int offset, unsigned long size, int head)
  */
 unsigned int xen_netbk_count_skb_slots(struct xenvif *vif, struct sk_buff *skb)
 {
+	struct xenvif_count_slot_state state;
 	unsigned int count;
-	int i, copy_off;
+	unsigned char *data;
+	unsigned i;
 
-	count = DIV_ROUND_UP(skb_headlen(skb), PAGE_SIZE);
+	state.head = true;
+	state.copy_off = 0;
 
-	copy_off = skb_headlen(skb) % PAGE_SIZE;
+	/* Slot for the first (partial) page of data. */
+	count = 1;
 
+	/* Need a slot for the GSO prefix for GSO extra data? */
 	if (skb_shinfo(skb)->gso_size)
 		count++;
+
+	data = skb->data;
+	while (data < skb_tail_pointer(skb)) {
+		unsigned long offset = offset_in_page(data);
+		unsigned long size = PAGE_SIZE - offset;
+
+		if (data + size > skb_tail_pointer(skb))
+			size = skb_tail_pointer(skb) - data;
+
+		count += xenvif_count_frag_slots(vif, offset, size, &state);
+
+		data += size;
+	}
 
 	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
 		unsigned long size = skb_frag_size(&skb_shinfo(skb)->frags[i]);
 		unsigned long offset = skb_shinfo(skb)->frags[i].page_offset;
-		unsigned long bytes;
 
-		offset &= ~PAGE_MASK;
-
-		while (size > 0) {
-			BUG_ON(offset >= PAGE_SIZE);
-			BUG_ON(copy_off > MAX_BUFFER_OFFSET);
-
-			bytes = PAGE_SIZE - offset;
-
-			if (bytes > size)
-				bytes = size;
-
-			if (start_new_rx_buffer(copy_off, bytes, 0)) {
-				count++;
-				copy_off = 0;
-			}
-
-			if (copy_off + bytes > MAX_BUFFER_OFFSET)
-				bytes = MAX_BUFFER_OFFSET - copy_off;
-
-			copy_off += bytes;
-
-			offset += bytes;
-			size -= bytes;
-
-			if (offset == PAGE_SIZE)
-				offset = 0;
-		}
+		count += xenvif_count_frag_slots(vif, offset, size, &state);
 	}
 	return count;
 }
@@ -662,7 +696,7 @@ static void xen_netbk_rx_action(struct xen_netbk *netbk)
 {
 	struct xenvif *vif = NULL, *tmp;
 	s8 status;
-	u16 irq, flags;
+	u16 flags;
 	struct xen_netif_rx_response *resp;
 	struct sk_buff_head rxq;
 	struct sk_buff *skb;
@@ -771,13 +805,13 @@ static void xen_netbk_rx_action(struct xen_netbk *netbk)
 					 sco->meta_slots_used);
 
 		RING_PUSH_RESPONSES_AND_CHECK_NOTIFY(&vif->rx, ret);
-		irq = vif->irq;
-		if (ret && list_empty(&vif->notify_list))
-			list_add_tail(&vif->notify_list, &notify);
 
 		xenvif_notify_tx_completion(vif);
 
-		xenvif_put(vif);
+		if (ret && list_empty(&vif->notify_list))
+			list_add_tail(&vif->notify_list, &notify);
+		else
+			xenvif_put(vif);
 		npo.meta_cons += sco->meta_slots_used;
 		dev_kfree_skb(skb);
 	}
@@ -785,6 +819,7 @@ static void xen_netbk_rx_action(struct xen_netbk *netbk)
 	list_for_each_entry_safe(vif, tmp, &notify, notify_list) {
 		notify_remote_via_irq(vif->irq);
 		list_del_init(&vif->notify_list);
+		xenvif_put(vif);
 	}
 
 	/* More work to do? */
@@ -1388,9 +1423,8 @@ out:
 
 static bool tx_credit_exceeded(struct xenvif *vif, unsigned size)
 {
-	unsigned long now = jiffies;
-	unsigned long next_credit =
-		vif->credit_timeout.expires +
+	u64 now = get_jiffies_64();
+	u64 next_credit = vif->credit_window_start +
 		msecs_to_jiffies(vif->credit_usec / 1000);
 
 	/* Timer could already be pending in rare cases. */
@@ -1398,8 +1432,8 @@ static bool tx_credit_exceeded(struct xenvif *vif, unsigned size)
 		return true;
 
 	/* Passed the point where we can replenish credit? */
-	if (time_after_eq(now, next_credit)) {
-		vif->credit_timeout.expires = now;
+	if (time_after_eq64(now, next_credit)) {
+		vif->credit_window_start = now;
 		tx_add_credit(vif);
 	}
 
@@ -1411,6 +1445,7 @@ static bool tx_credit_exceeded(struct xenvif *vif, unsigned size)
 			tx_credit_callback;
 		mod_timer(&vif->credit_timeout,
 			  next_credit);
+		vif->credit_window_start = next_credit;
 
 		return true;
 	}

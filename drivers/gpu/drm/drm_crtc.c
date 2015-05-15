@@ -78,6 +78,10 @@ void drm_warn_on_modeset_not_all_locked(struct drm_device *dev)
 {
 	struct drm_crtc *crtc;
 
+	/* Locking is currently fubar in the panic handler. */
+	if (oops_in_progress)
+		return;
+
 	list_for_each_entry(crtc, &dev->mode_config.crtc_list, head)
 		WARN_ON(!mutex_is_locked(&crtc->mutex));
 
@@ -246,6 +250,7 @@ char *drm_get_connector_status_name(enum drm_connector_status status)
 	else
 		return "unknown";
 }
+EXPORT_SYMBOL(drm_get_connector_status_name);
 
 /**
  * drm_mode_object_get - allocate a new modeset identifier
@@ -2496,10 +2501,22 @@ int drm_mode_getfb(struct drm_device *dev,
 	r->depth = fb->depth;
 	r->bpp = fb->bits_per_pixel;
 	r->pitch = fb->pitches[0];
-	if (fb->funcs->create_handle)
-		ret = fb->funcs->create_handle(fb, file_priv, &r->handle);
-	else
+	if (fb->funcs->create_handle) {
+		if (file_priv->is_master || capable(CAP_SYS_ADMIN)) {
+			ret = fb->funcs->create_handle(fb, file_priv,
+						       &r->handle);
+		} else {
+			/* GET_FB() is an unprivileged ioctl so we must not
+			 * return a buffer-handle to non-master processes! For
+			 * backwards-compatibility reasons, we cannot make
+			 * GET_FB() privileged, so just return an invalid handle
+			 * for non-masters. */
+			r->handle = 0;
+			ret = 0;
+		}
+	} else {
 		ret = -ENODEV;
+	}
 
 	drm_framebuffer_unreference(fb);
 

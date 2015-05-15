@@ -498,6 +498,7 @@ void invert_screen(struct vc_data *vc, int offset, int count, int viewed)
 #endif
 	if (DO_UPDATE(vc))
 		do_update_region(vc, (unsigned long) p, count);
+	notify_update(vc);
 }
 
 /* used by selection: complement pointer position */
@@ -514,6 +515,7 @@ void complement_pos(struct vc_data *vc, int offset)
 		scr_writew(old, screenpos(vc, old_offset, 1));
 		if (DO_UPDATE(vc))
 			vc->vc_sw->con_putc(vc, old, oldy, oldx);
+		notify_update(vc);
 	}
 
 	old_offset = offset;
@@ -531,8 +533,8 @@ void complement_pos(struct vc_data *vc, int offset)
 			oldy = (offset >> 1) / vc->vc_cols;
 			vc->vc_sw->con_putc(vc, new, oldy, oldx);
 		}
+		notify_update(vc);
 	}
-
 }
 
 static void insert_char(struct vc_data *vc, unsigned int nr)
@@ -779,7 +781,6 @@ int vc_allocate(unsigned int currcons)	/* return 0 on success */
 		con_set_default_unimap(vc);
 	    vc->vc_screenbuf = kmalloc(vc->vc_screenbuf_size, GFP_KERNEL);
 	    if (!vc->vc_screenbuf) {
-		tty_port_destroy(&vc->port);
 		kfree(vc);
 		vc_cons[currcons].d = NULL;
 		return -ENOMEM;
@@ -986,26 +987,25 @@ static int vt_resize(struct tty_struct *tty, struct winsize *ws)
 	return ret;
 }
 
-void vc_deallocate(unsigned int currcons)
+struct vc_data *vc_deallocate(unsigned int currcons)
 {
+	struct vc_data *vc = NULL;
+
 	WARN_CONSOLE_UNLOCKED();
 
 	if (vc_cons_allocated(currcons)) {
-		struct vc_data *vc = vc_cons[currcons].d;
-		struct vt_notifier_param param = { .vc = vc };
+		struct vt_notifier_param param;
 
+		param.vc = vc = vc_cons[currcons].d;
 		atomic_notifier_call_chain(&vt_notifier_list, VT_DEALLOCATE, &param);
 		vcs_remove_sysfs(currcons);
 		vc->vc_sw->con_deinit(vc);
 		put_pid(vc->vt_pid);
 		module_put(vc->vc_sw->owner);
 		kfree(vc->vc_screenbuf);
-		if (currcons >= MIN_NR_CONSOLES) {
-			tty_port_destroy(&vc->port);
-			kfree(vc);
-		}
 		vc_cons[currcons].d = NULL;
 	}
+	return vc;
 }
 
 /*
@@ -1166,6 +1166,8 @@ static void csi_J(struct vc_data *vc, int vpar)
 			scr_memsetw(vc->vc_screenbuf, vc->vc_video_erase_char,
 				    vc->vc_screenbuf_size >> 1);
 			set_origin(vc);
+			if (CON_IS_VISIBLE(vc))
+				update_screen(vc);
 			/* fall through */
 		case 2: /* erase whole display */
 			count = vc->vc_cols * vc->vc_rows;

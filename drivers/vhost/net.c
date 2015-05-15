@@ -150,19 +150,21 @@ static void vhost_net_ubuf_put_and_wait(struct vhost_net_ubuf_ref *ubufs)
 {
 	kref_put(&ubufs->kref, vhost_net_zerocopy_done_signal);
 	wait_event(ubufs->wait, !atomic_read(&ubufs->kref.refcount));
+}
+
+static void vhost_net_ubuf_put_wait_and_free(struct vhost_net_ubuf_ref *ubufs)
+{
+	vhost_net_ubuf_put_and_wait(ubufs);
 	kfree(ubufs);
 }
 
 static void vhost_net_clear_ubuf_info(struct vhost_net *n)
 {
-
-	bool zcopy;
 	int i;
 
-	for (i = 0; i < n->dev.nvqs; ++i) {
-		zcopy = vhost_net_zcopy_mask & (0x1 << i);
-		if (zcopy)
-			kfree(n->vqs[i].ubuf_info);
+	for (i = 0; i < VHOST_NET_VQ_MAX; ++i) {
+		kfree(n->vqs[i].ubuf_info);
+		n->vqs[i].ubuf_info = NULL;
 	}
 }
 
@@ -171,7 +173,7 @@ int vhost_net_set_ubuf_info(struct vhost_net *n)
 	bool zcopy;
 	int i;
 
-	for (i = 0; i < n->dev.nvqs; ++i) {
+	for (i = 0; i < VHOST_NET_VQ_MAX; ++i) {
 		zcopy = vhost_net_zcopy_mask & (0x1 << i);
 		if (!zcopy)
 			continue;
@@ -183,12 +185,7 @@ int vhost_net_set_ubuf_info(struct vhost_net *n)
 	return 0;
 
 err:
-	while (i--) {
-		zcopy = vhost_net_zcopy_mask & (0x1 << i);
-		if (!zcopy)
-			continue;
-		kfree(n->vqs[i].ubuf_info);
-	}
+	vhost_net_clear_ubuf_info(n);
 	return -ENOMEM;
 }
 
@@ -196,12 +193,12 @@ void vhost_net_vq_reset(struct vhost_net *n)
 {
 	int i;
 
+	vhost_net_clear_ubuf_info(n);
+
 	for (i = 0; i < VHOST_NET_VQ_MAX; i++) {
 		n->vqs[i].done_idx = 0;
 		n->vqs[i].upend_idx = 0;
 		n->vqs[i].ubufs = NULL;
-		kfree(n->vqs[i].ubuf_info);
-		n->vqs[i].ubuf_info = NULL;
 		n->vqs[i].vhost_hlen = 0;
 		n->vqs[i].sock_hlen = 0;
 	}
@@ -310,6 +307,11 @@ static void vhost_zerocopy_callback(struct ubuf_info *ubuf, bool success)
 	struct vhost_virtqueue *vq = ubufs->vq;
 	int cnt = atomic_read(&ubufs->kref.refcount);
 
+	/* set len to mark this desc buffers done DMA */
+	vq->heads[ubuf->desc].len = success ?
+		VHOST_DMA_DONE_LEN : VHOST_DMA_FAILED_LEN;
+	vhost_net_ubuf_put(ubufs);
+
 	/*
 	 * Trigger polling thread if guest stopped submitting new buffers:
 	 * in this case, the refcount after decrement will eventually reach 1
@@ -320,10 +322,6 @@ static void vhost_zerocopy_callback(struct ubuf_info *ubuf, bool success)
 	 */
 	if (cnt <= 2 || !(cnt % 16))
 		vhost_poll_queue(&vq->poll);
-	/* set len to mark this desc buffers done DMA */
-	vq->heads[ubuf->desc].len = success ?
-		VHOST_DMA_DONE_LEN : VHOST_DMA_FAILED_LEN;
-	vhost_net_ubuf_put(ubufs);
 }
 
 /* Expects to be always run from workqueue - which acts as
@@ -436,7 +434,8 @@ static void handle_tx(struct vhost_net *net)
 				kref_get(&ubufs->kref);
 			}
 			nvq->upend_idx = (nvq->upend_idx + 1) % UIO_MAXIOV;
-		}
+		} else
+			msg.msg_control = NULL;
 		/* TODO: Check specific error and bomb out unless ENOBUFS? */
 		err = sock->ops->sendmsg(NULL, sock, &msg, len);
 		if (unlikely(err < 0)) {
@@ -514,9 +513,13 @@ static int get_rx_bufs(struct vhost_virtqueue *vq,
 			r = -ENOBUFS;
 			goto err;
 		}
-		d = vhost_get_vq_desc(vq->dev, vq, vq->iov + seg,
+		r = vhost_get_vq_desc(vq->dev, vq, vq->iov + seg,
 				      ARRAY_SIZE(vq->iov) - seg, &out,
 				      &in, log, log_num);
+		if (unlikely(r < 0))
+			goto err;
+
+		d = r;
 		if (d == vq->num) {
 			r = 0;
 			goto err;
@@ -541,6 +544,12 @@ static int get_rx_bufs(struct vhost_virtqueue *vq,
 	*iovcount = seg;
 	if (unlikely(log))
 		*log_num = nlogs;
+
+	/* Detect overrun */
+	if (unlikely(datalen > 0)) {
+		r = UIO_MAXIOV + 1;
+		goto err;
+	}
 	return headcount;
 err:
 	vhost_discard_vq_desc(vq, headcount);
@@ -596,6 +605,14 @@ static void handle_rx(struct vhost_net *net)
 		/* On error, stop handling until the next kick. */
 		if (unlikely(headcount < 0))
 			break;
+		/* On overrun, truncate and discard */
+		if (unlikely(headcount > UIO_MAXIOV)) {
+			msg.msg_iovlen = 1;
+			err = sock->ops->recvmsg(NULL, sock, &msg,
+						 1, MSG_DONTWAIT | MSG_TRUNC);
+			pr_debug("Discarded rx packet: len %zd\n", sock_len);
+			continue;
+		}
 		/* OK, now we need to know about added descriptors. */
 		if (!headcount) {
 			if (unlikely(vhost_enable_notify(&net->dev, vq))) {
@@ -955,7 +972,7 @@ static long vhost_net_set_backend(struct vhost_net *n, unsigned index, int fd)
 	mutex_unlock(&vq->mutex);
 
 	if (oldubufs) {
-		vhost_net_ubuf_put_and_wait(oldubufs);
+		vhost_net_ubuf_put_wait_and_free(oldubufs);
 		mutex_lock(&vq->mutex);
 		vhost_zerocopy_signal_used(n, vq);
 		mutex_unlock(&vq->mutex);
@@ -973,7 +990,7 @@ err_used:
 	rcu_assign_pointer(vq->private_data, oldsock);
 	vhost_net_enable_vq(n, vq);
 	if (ubufs)
-		vhost_net_ubuf_put_and_wait(ubufs);
+		vhost_net_ubuf_put_wait_and_free(ubufs);
 err_ubufs:
 	fput(sock->file);
 err_vq:
@@ -1053,6 +1070,10 @@ static long vhost_net_set_owner(struct vhost_net *n)
 	int r;
 
 	mutex_lock(&n->dev.mutex);
+	if (vhost_dev_has_owner(&n->dev)) {
+		r = -EBUSY;
+		goto out;
+	}
 	r = vhost_net_set_ubuf_info(n);
 	if (r)
 		goto out;

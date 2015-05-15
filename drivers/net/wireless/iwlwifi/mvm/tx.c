@@ -175,12 +175,13 @@ static void iwl_mvm_set_tx_cmd_rate(struct iwl_mvm *mvm,
 	 * table is controlled by LINK_QUALITY commands
 	 */
 
-	if (ieee80211_is_data(fc)) {
+	if (ieee80211_is_data(fc) && sta) {
 		tx_cmd->initial_rate_index = 0;
 		tx_cmd->tx_flags |= cpu_to_le32(TX_CMD_FLG_STA_RATE);
 		return;
 	} else if (ieee80211_is_back_req(fc)) {
-		tx_cmd->tx_flags |= cpu_to_le32(TX_CMD_FLG_STA_RATE);
+		tx_cmd->tx_flags |=
+			cpu_to_le32(TX_CMD_FLG_ACK | TX_CMD_FLG_BAR);
 	}
 
 	/* HT rate doesn't make sense for a non data frame */
@@ -416,9 +417,8 @@ int iwl_mvm_tx_skb(struct iwl_mvm *mvm, struct sk_buff *skb,
 
 	spin_unlock(&mvmsta->lock);
 
-	if (mvmsta->vif->type == NL80211_IFTYPE_AP &&
-	    txq_id < IWL_MVM_FIRST_AGG_QUEUE)
-		atomic_inc(&mvmsta->pending_frames);
+	if (txq_id < IWL_MVM_FIRST_AGG_QUEUE)
+		atomic_inc(&mvm->pending_frames[mvmsta->sta_id]);
 
 	return 0;
 
@@ -610,8 +610,8 @@ static void iwl_mvm_rx_tx_cmd_single(struct iwl_mvm *mvm,
 		    !(info->flags & IEEE80211_TX_STAT_ACK))
 			info->flags |= IEEE80211_TX_STAT_AMPDU_NO_BACK;
 
-		/* W/A FW bug: seq_ctl is wrong when the queue is flushed */
-		if (status == TX_STATUS_FAIL_FIFO_FLUSHED) {
+		/* W/A FW bug: seq_ctl is wrong when the status isn't success */
+		if (status != TX_STATUS_SUCCESS) {
 			struct ieee80211_hdr *hdr = (void *)skb->data;
 			seq_ctl = le16_to_cpu(hdr->seq_ctrl);
 		}
@@ -680,16 +680,41 @@ static void iwl_mvm_rx_tx_cmd_single(struct iwl_mvm *mvm,
 	/*
 	 * If the txq is not an AMPDU queue, there is no chance we freed
 	 * several skbs. Check that out...
-	 * If there are no pending frames for this STA, notify mac80211 that
-	 * this station can go to sleep in its STA table.
 	 */
-	if (txq_id < IWL_MVM_FIRST_AGG_QUEUE && mvmsta &&
-	    !WARN_ON(skb_freed > 1) &&
-	    mvmsta->vif->type == NL80211_IFTYPE_AP &&
-	    atomic_sub_and_test(skb_freed, &mvmsta->pending_frames)) {
-		ieee80211_sta_block_awake(mvm->hw, sta, false);
-		set_bit(sta_id, mvm->sta_drained);
-		schedule_work(&mvm->sta_drained_wk);
+	if (txq_id < IWL_MVM_FIRST_AGG_QUEUE && !WARN_ON(skb_freed > 1) &&
+	    atomic_sub_and_test(skb_freed, &mvm->pending_frames[sta_id])) {
+		if (mvmsta) {
+			/*
+			 * If there are no pending frames for this STA, notify
+			 * mac80211 that this station can go to sleep in its
+			 * STA table.
+			 */
+			if (mvmsta->vif->type == NL80211_IFTYPE_AP)
+				ieee80211_sta_block_awake(mvm->hw, sta, false);
+			/*
+			 * We might very well have taken mvmsta pointer while
+			 * the station was being removed. The remove flow might
+			 * have seen a pending_frame (because we didn't take
+			 * the lock) even if now the queues are drained. So make
+			 * really sure now that this the station is not being
+			 * removed. If it is, run the drain worker to remove it.
+			 */
+			spin_lock_bh(&mvmsta->lock);
+			sta = rcu_dereference(mvm->fw_id_to_mac_id[sta_id]);
+			if (IS_ERR_OR_NULL(sta)) {
+				/*
+				 * Station disappeared in the meantime:
+				 * so we are draining.
+				 */
+				set_bit(sta_id, mvm->sta_drained);
+				schedule_work(&mvm->sta_drained_wk);
+			}
+			spin_unlock_bh(&mvmsta->lock);
+		} else if (!mvmsta) {
+			/* Tx response without STA, so we are draining */
+			set_bit(sta_id, mvm->sta_drained);
+			schedule_work(&mvm->sta_drained_wk);
+		}
 	}
 
 	rcu_read_unlock();
@@ -794,22 +819,23 @@ int iwl_mvm_rx_ba_notif(struct iwl_mvm *mvm, struct iwl_rx_cmd_buffer *rxb,
 	struct iwl_mvm_ba_notif *ba_notif = (void *)pkt->data;
 	struct sk_buff_head reclaimed_skbs;
 	struct iwl_mvm_tid_data *tid_data;
-	struct ieee80211_tx_info *info;
 	struct ieee80211_sta *sta;
 	struct iwl_mvm_sta *mvmsta;
-	struct ieee80211_hdr *hdr;
 	struct sk_buff *skb;
 	int sta_id, tid, freed;
-
 	/* "flow" corresponds to Tx queue */
 	u16 scd_flow = le16_to_cpu(ba_notif->scd_flow);
-
 	/* "ssn" is start of block-ack Tx window, corresponds to index
 	 * (in Tx queue's circular buffer) of first TFD/frame in window */
 	u16 ba_resp_scd_ssn = le16_to_cpu(ba_notif->scd_ssn);
 
 	sta_id = ba_notif->sta_id;
 	tid = ba_notif->tid;
+
+	if (WARN_ONCE(sta_id >= IWL_MVM_STATION_COUNT ||
+		      tid >= IWL_MAX_TID_COUNT,
+		      "sta_id %d tid %d", sta_id, tid))
+		return 0;
 
 	rcu_read_lock();
 
@@ -860,22 +886,26 @@ int iwl_mvm_rx_ba_notif(struct iwl_mvm *mvm, struct iwl_rx_cmd_buffer *rxb,
 	freed = 0;
 
 	skb_queue_walk(&reclaimed_skbs, skb) {
-		hdr = (struct ieee80211_hdr *)skb->data;
+		struct ieee80211_hdr *hdr = (void *)skb->data;
+		struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
 
 		if (ieee80211_is_data_qos(hdr->frame_control))
 			freed++;
 		else
 			WARN_ON_ONCE(1);
 
-		info = IEEE80211_SKB_CB(skb);
 		iwl_trans_free_tx_cmd(mvm->trans, info->driver_data[1]);
+
+		memset(&info->status, 0, sizeof(info->status));
+		/* Packet was transmitted successfully, failures come as single
+		 * frames because before failing a frame the firmware transmits
+		 * it without aggregation at least once.
+		 */
+		info->flags |= IEEE80211_TX_STAT_ACK;
 
 		if (freed == 1) {
 			/* this is the first skb we deliver in this batch */
 			/* put the rate scaling data there */
-			info = IEEE80211_SKB_CB(skb);
-			memset(&info->status, 0, sizeof(info->status));
-			info->flags |= IEEE80211_TX_STAT_ACK;
 			info->flags |= IEEE80211_TX_STAT_AMPDU;
 			info->status.ampdu_ack_len = ba_notif->txed_2_done;
 			info->status.ampdu_len = ba_notif->txed;

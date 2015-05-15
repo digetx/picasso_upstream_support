@@ -646,6 +646,7 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 	case 14:
 		/* Assist Exception Trap, i.e. floating point exception. */
 		die_if_kernel("Floating point exception", regs, 0); /* quiet */
+		__inc_irq_stat(irq_fpassist_count);
 		handle_fpe(regs);
 		return;
 
@@ -804,14 +805,14 @@ void notrace handle_interruption(int code, struct pt_regs *regs)
 	else {
 
 	    /*
-	     * The kernel should never fault on its own address space.
+	     * The kernel should never fault on its own address space,
+	     * unless pagefault_disable() was called before.
 	     */
 
-	    if (fault_space == 0) 
+	    if (fault_space == 0 && !in_atomic())
 	    {
 		pdc_chassis_send_status(PDC_CHASSIS_DIRECT_PANIC);
 		parisc_terminate("Kernel Fault", regs, code, fault_address);
-	
 	    }
 	}
 

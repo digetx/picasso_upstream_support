@@ -66,9 +66,8 @@ static int fd_attach_hba(struct se_hba *hba, u32 host_id)
 	pr_debug("CORE_HBA[%d] - TCM FILEIO HBA Driver %s on Generic"
 		" Target Core Stack %s\n", hba->hba_id, FD_VERSION,
 		TARGET_CORE_MOD_VERSION);
-	pr_debug("CORE_HBA[%d] - Attached FILEIO HBA: %u to Generic"
-		" MaxSectors: %u\n",
-		hba->hba_id, fd_host->fd_host_id, FD_MAX_SECTORS);
+	pr_debug("CORE_HBA[%d] - Attached FILEIO HBA: %u to Generic\n",
+		hba->hba_id, fd_host->fd_host_id);
 
 	return 0;
 }
@@ -153,10 +152,7 @@ static int fd_configure_device(struct se_device *dev)
 		struct request_queue *q = bdev_get_queue(inode->i_bdev);
 		unsigned long long dev_size;
 
-		dev->dev_attrib.hw_block_size =
-			bdev_logical_block_size(inode->i_bdev);
-		dev->dev_attrib.hw_max_sectors = queue_max_hw_sectors(q);
-
+		fd_dev->fd_block_size = bdev_logical_block_size(inode->i_bdev);
 		/*
 		 * Determine the number of bytes from i_size_read() minus
 		 * one (1) logical sector from underlying struct block_device
@@ -203,9 +199,7 @@ static int fd_configure_device(struct se_device *dev)
 			goto fail;
 		}
 
-		dev->dev_attrib.hw_block_size = FD_BLOCKSIZE;
-		dev->dev_attrib.hw_max_sectors = FD_MAX_SECTORS;
-
+		fd_dev->fd_block_size = FD_BLOCKSIZE;
 		/*
 		 * Limit UNMAP emulation to 8k Number of LBAs (NoLB)
 		 */
@@ -224,8 +218,9 @@ static int fd_configure_device(struct se_device *dev)
 		dev->dev_attrib.max_write_same_len = 0x1000;
 	}
 
-	fd_dev->fd_block_size = dev->dev_attrib.hw_block_size;
-
+	dev->dev_attrib.hw_block_size = fd_dev->fd_block_size;
+	dev->dev_attrib.max_bytes_per_io = FD_MAX_BYTES;
+	dev->dev_attrib.hw_max_sectors = FD_MAX_BYTES / fd_dev->fd_block_size;
 	dev->dev_attrib.hw_queue_depth = FD_MAX_DEVICE_QUEUE_DEPTH;
 
 	if (fd_dev->fbd_flags & FDBD_HAS_BUFFERED_IO_WCE) {
@@ -559,7 +554,16 @@ fd_execute_rw(struct se_cmd *cmd)
 	enum dma_data_direction data_direction = cmd->data_direction;
 	struct se_device *dev = cmd->se_dev;
 	int ret = 0;
-
+	/*
+	 * We are currently limited by the number of iovecs (2048) per
+	 * single vfs_[writev,readv] call.
+	 */
+	if (cmd->data_length > FD_MAX_BYTES) {
+		pr_err("FILEIO: Not able to process I/O of %u bytes due to"
+		       "FD_MAX_BYTES: %u iovec count limitiation\n",
+			cmd->data_length, FD_MAX_BYTES);
+		return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
+	}
 	/*
 	 * Call vectorized fileio functions to map struct scatterlist
 	 * physical memory addresses to struct iovec virtual memory.
@@ -699,11 +703,12 @@ static sector_t fd_get_blocks(struct se_device *dev)
 	 * to handle underlying block_device resize operations.
 	 */
 	if (S_ISBLK(i->i_mode))
-		dev_size = (i_size_read(i) - fd_dev->fd_block_size);
+		dev_size = i_size_read(i);
 	else
 		dev_size = fd_dev->fd_dev_size;
 
-	return div_u64(dev_size, dev->dev_attrib.block_size);
+	return div_u64(dev_size - dev->dev_attrib.block_size,
+		       dev->dev_attrib.block_size);
 }
 
 static struct sbc_ops fd_sbc_ops = {

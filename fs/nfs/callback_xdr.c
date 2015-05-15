@@ -464,8 +464,10 @@ static __be32 decode_cb_sequence_args(struct svc_rqst *rqstp,
 
 		for (i = 0; i < args->csa_nrclists; i++) {
 			status = decode_rc_list(xdr, &args->csa_rclists[i]);
-			if (status)
+			if (status) {
+				args->csa_nrclists = i;
 				goto out_free;
+			}
 		}
 	}
 	status = 0;
@@ -763,7 +765,7 @@ static void nfs4_callback_free_slot(struct nfs4_session *session)
 	 * A single slot, so highest used slotid is either 0 or -1
 	 */
 	tbl->highest_used_slotid = NFS4_NO_SLOT;
-	nfs4_session_drain_complete(session, tbl);
+	nfs4_slot_tbl_drain_complete(tbl);
 	spin_unlock(&tbl->slot_tbl_lock);
 }
 

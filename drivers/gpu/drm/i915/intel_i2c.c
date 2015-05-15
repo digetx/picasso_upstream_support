@@ -228,7 +228,7 @@ gmbus_wait_hw_status(struct drm_i915_private *dev_priv,
 	 * need to wake up periodically and check that ourselves. */
 	I915_WRITE(GMBUS4 + reg_offset, gmbus4_irq_en);
 
-	for (i = 0; i < msecs_to_jiffies(50) + 1; i++) {
+	for (i = 0; i < msecs_to_jiffies_timeout(50); i++) {
 		prepare_to_wait(&dev_priv->gmbus_wait_queue, &wait,
 				TASK_UNINTERRUPTIBLE);
 
@@ -263,7 +263,8 @@ gmbus_wait_idle(struct drm_i915_private *dev_priv)
 	/* Important: The hw handles only the first bit, so set only one! */
 	I915_WRITE(GMBUS4 + reg_offset, GMBUS_IDLE_EN);
 
-	ret = wait_event_timeout(dev_priv->gmbus_wait_queue, C, 10);
+	ret = wait_event_timeout(dev_priv->gmbus_wait_queue, C,
+				 msecs_to_jiffies_timeout(10));
 
 	I915_WRITE(GMBUS4 + reg_offset, 0);
 
@@ -275,18 +276,17 @@ gmbus_wait_idle(struct drm_i915_private *dev_priv)
 }
 
 static int
-gmbus_xfer_read(struct drm_i915_private *dev_priv, struct i2c_msg *msg,
-		u32 gmbus1_index)
+gmbus_xfer_read_chunk(struct drm_i915_private *dev_priv,
+		      unsigned short addr, u8 *buf, unsigned int len,
+		      u32 gmbus1_index)
 {
 	int reg_offset = dev_priv->gpio_mmio_base;
-	u16 len = msg->len;
-	u8 *buf = msg->buf;
 
 	I915_WRITE(GMBUS1 + reg_offset,
 		   gmbus1_index |
 		   GMBUS_CYCLE_WAIT |
 		   (len << GMBUS_BYTE_COUNT_SHIFT) |
-		   (msg->addr << GMBUS_SLAVE_ADDR_SHIFT) |
+		   (addr << GMBUS_SLAVE_ADDR_SHIFT) |
 		   GMBUS_SLAVE_READ | GMBUS_SW_RDY);
 	while (len) {
 		int ret;
@@ -308,11 +308,35 @@ gmbus_xfer_read(struct drm_i915_private *dev_priv, struct i2c_msg *msg,
 }
 
 static int
-gmbus_xfer_write(struct drm_i915_private *dev_priv, struct i2c_msg *msg)
+gmbus_xfer_read(struct drm_i915_private *dev_priv, struct i2c_msg *msg,
+		u32 gmbus1_index)
+{
+	u8 *buf = msg->buf;
+	unsigned int rx_size = msg->len;
+	unsigned int len;
+	int ret;
+
+	do {
+		len = min(rx_size, GMBUS_BYTE_COUNT_MAX);
+
+		ret = gmbus_xfer_read_chunk(dev_priv, msg->addr,
+					    buf, len, gmbus1_index);
+		if (ret)
+			return ret;
+
+		rx_size -= len;
+		buf += len;
+	} while (rx_size != 0);
+
+	return 0;
+}
+
+static int
+gmbus_xfer_write_chunk(struct drm_i915_private *dev_priv,
+		       unsigned short addr, u8 *buf, unsigned int len)
 {
 	int reg_offset = dev_priv->gpio_mmio_base;
-	u16 len = msg->len;
-	u8 *buf = msg->buf;
+	unsigned int chunk_size = len;
 	u32 val, loop;
 
 	val = loop = 0;
@@ -324,8 +348,8 @@ gmbus_xfer_write(struct drm_i915_private *dev_priv, struct i2c_msg *msg)
 	I915_WRITE(GMBUS3 + reg_offset, val);
 	I915_WRITE(GMBUS1 + reg_offset,
 		   GMBUS_CYCLE_WAIT |
-		   (msg->len << GMBUS_BYTE_COUNT_SHIFT) |
-		   (msg->addr << GMBUS_SLAVE_ADDR_SHIFT) |
+		   (chunk_size << GMBUS_BYTE_COUNT_SHIFT) |
+		   (addr << GMBUS_SLAVE_ADDR_SHIFT) |
 		   GMBUS_SLAVE_WRITE | GMBUS_SW_RDY);
 	while (len) {
 		int ret;
@@ -342,6 +366,29 @@ gmbus_xfer_write(struct drm_i915_private *dev_priv, struct i2c_msg *msg)
 		if (ret)
 			return ret;
 	}
+
+	return 0;
+}
+
+static int
+gmbus_xfer_write(struct drm_i915_private *dev_priv, struct i2c_msg *msg)
+{
+	u8 *buf = msg->buf;
+	unsigned int tx_size = msg->len;
+	unsigned int len;
+	int ret;
+
+	do {
+		len = min(tx_size, GMBUS_BYTE_COUNT_MAX);
+
+		ret = gmbus_xfer_write_chunk(dev_priv, msg->addr, buf, len);
+		if (ret)
+			return ret;
+
+		buf += len;
+		tx_size -= len;
+	} while (tx_size != 0);
+
 	return 0;
 }
 

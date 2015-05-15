@@ -127,12 +127,21 @@ int main(void)
 	DEFINE(THREAD_BESCR, offsetof(struct thread_struct, bescr));
 	DEFINE(THREAD_EBBHR, offsetof(struct thread_struct, ebbhr));
 	DEFINE(THREAD_EBBRR, offsetof(struct thread_struct, ebbrr));
+	DEFINE(THREAD_SIAR, offsetof(struct thread_struct, siar));
+	DEFINE(THREAD_SDAR, offsetof(struct thread_struct, sdar));
+	DEFINE(THREAD_SIER, offsetof(struct thread_struct, sier));
+	DEFINE(THREAD_MMCR0, offsetof(struct thread_struct, mmcr0));
+	DEFINE(THREAD_MMCR2, offsetof(struct thread_struct, mmcr2));
+	DEFINE(THREAD_MMCRA, offsetof(struct thread_struct, mmcra));
 #endif
 #ifdef CONFIG_PPC_TRANSACTIONAL_MEM
 	DEFINE(PACATMSCRATCH, offsetof(struct paca_struct, tm_scratch));
 	DEFINE(THREAD_TM_TFHAR, offsetof(struct thread_struct, tm_tfhar));
 	DEFINE(THREAD_TM_TEXASR, offsetof(struct thread_struct, tm_texasr));
 	DEFINE(THREAD_TM_TFIAR, offsetof(struct thread_struct, tm_tfiar));
+	DEFINE(THREAD_TM_TAR, offsetof(struct thread_struct, tm_tar));
+	DEFINE(THREAD_TM_PPR, offsetof(struct thread_struct, tm_ppr));
+	DEFINE(THREAD_TM_DSCR, offsetof(struct thread_struct, tm_dscr));
 	DEFINE(PT_CKPT_REGS, offsetof(struct thread_struct, ckpt_regs));
 	DEFINE(THREAD_TRANSACT_VR0, offsetof(struct thread_struct,
 					 transact_vr[0]));

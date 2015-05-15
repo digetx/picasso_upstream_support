@@ -97,6 +97,7 @@ enum acpi_hotplug_mode {
 struct acpi_hotplug_profile {
 	struct kobject kobj;
 	bool enabled:1;
+	bool ignore:1;
 	enum acpi_hotplug_mode mode;
 };
 
@@ -377,49 +378,20 @@ acpi_status acpi_bus_get_status_handle(acpi_handle handle,
 				       unsigned long long *sta);
 int acpi_bus_get_status(struct acpi_device *device);
 
-#ifdef CONFIG_PM
 int acpi_bus_set_power(acpi_handle handle, int state);
 const char *acpi_power_state_string(int state);
 int acpi_device_get_power(struct acpi_device *device, int *state);
 int acpi_device_set_power(struct acpi_device *device, int state);
 int acpi_bus_init_power(struct acpi_device *device);
+int acpi_device_fix_up_power(struct acpi_device *device);
 int acpi_bus_update_power(acpi_handle handle, int *state_p);
 bool acpi_bus_power_manageable(acpi_handle handle);
+
+#ifdef CONFIG_PM
 bool acpi_bus_can_wakeup(acpi_handle handle);
-#else /* !CONFIG_PM */
-static inline int acpi_bus_set_power(acpi_handle handle, int state)
-{
-	return 0;
-}
-static inline const char *acpi_power_state_string(int state)
-{
-	return "D0";
-}
-static inline int acpi_device_get_power(struct acpi_device *device, int *state)
-{
-	return 0;
-}
-static inline int acpi_device_set_power(struct acpi_device *device, int state)
-{
-	return 0;
-}
-static inline int acpi_bus_init_power(struct acpi_device *device)
-{
-	return 0;
-}
-static inline int acpi_bus_update_power(acpi_handle handle, int *state_p)
-{
-	return 0;
-}
-static inline bool acpi_bus_power_manageable(acpi_handle handle)
-{
-	return false;
-}
-static inline bool acpi_bus_can_wakeup(acpi_handle handle)
-{
-	return false;
-}
-#endif /* !CONFIG_PM */
+#else
+static inline bool acpi_bus_can_wakeup(acpi_handle handle) { return false; }
+#endif
 
 #ifdef CONFIG_ACPI_PROC_EVENT
 int acpi_bus_generate_proc_event(struct acpi_device *device, u8 type, int data);
@@ -484,7 +456,11 @@ struct acpi_pci_root {
 };
 
 /* helper */
-acpi_handle acpi_get_child(acpi_handle, u64);
+acpi_handle acpi_find_child(acpi_handle, u64, bool);
+static inline acpi_handle acpi_get_child(acpi_handle handle, u64 addr)
+{
+	return acpi_find_child(handle, addr, false);
+}
 int acpi_is_root_bridge(acpi_handle);
 struct acpi_pci_root *acpi_pci_find_root(acpi_handle handle);
 #define DEVICE_ACPI_HANDLE(dev) ((acpi_handle)ACPI_HANDLE(dev))

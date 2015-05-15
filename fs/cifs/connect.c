@@ -377,6 +377,7 @@ cifs_reconnect(struct TCP_Server_Info *server)
 		try_to_freeze();
 
 		/* we should try only the port we connected to before */
+		mutex_lock(&server->srv_mutex);
 		rc = generic_ip_connect(server);
 		if (rc) {
 			cifs_dbg(FYI, "reconnect error %d\n", rc);
@@ -388,6 +389,7 @@ cifs_reconnect(struct TCP_Server_Info *server)
 				server->tcpStatus = CifsNeedNegotiate;
 			spin_unlock(&GlobalMid_Lock);
 		}
+		mutex_unlock(&server->srv_mutex);
 	} while (server->tcpStatus == CifsNeedReconnect);
 
 	return rc;
@@ -1061,6 +1063,7 @@ static int cifs_parse_security_flavors(char *value,
 #endif
 	case Opt_sec_none:
 		vol->nullauth = 1;
+		vol->secFlg |= CIFSSEC_MAY_NTLM;
 		break;
 	default:
 		cifs_dbg(VFS, "bad security option: %s\n", value);
@@ -1257,14 +1260,18 @@ cifs_parse_mount_options(const char *mountdata, const char *devname,
 	vol->backupuid_specified = false; /* no backup intent for a user */
 	vol->backupgid_specified = false; /* no backup intent for a group */
 
-	/*
-	 * For now, we ignore -EINVAL errors under the assumption that the
-	 * unc= and prefixpath= options will be usable.
-	 */
-	if (cifs_parse_devname(devname, vol) == -ENOMEM) {
-		printk(KERN_ERR "CIFS: Unable to allocate memory to parse "
-				"device string.\n");
-		goto out_nomem;
+	switch (cifs_parse_devname(devname, vol)) {
+	case 0:
+		break;
+	case -ENOMEM:
+		cifs_dbg(VFS, "Unable to allocate memory for devname.\n");
+		goto cifs_parse_mount_err;
+	case -EINVAL:
+		cifs_dbg(VFS, "Malformed UNC in devname.\n");
+		goto cifs_parse_mount_err;
+	default:
+		cifs_dbg(VFS, "Unknown error parsing devname.\n");
+		goto cifs_parse_mount_err;
 	}
 
 	while ((data = strsep(&options, separator)) != NULL) {
@@ -1657,7 +1664,8 @@ cifs_parse_mount_options(const char *mountdata, const char *devname,
 			if (string == NULL)
 				goto out_nomem;
 
-			if (strnlen(string, 256) == 256) {
+			if (strnlen(string, CIFS_MAX_DOMAINNAME_LEN)
+					== CIFS_MAX_DOMAINNAME_LEN) {
 				printk(KERN_WARNING "CIFS: domain name too"
 						    " long\n");
 				goto cifs_parse_mount_err;
@@ -1826,7 +1834,7 @@ cifs_parse_mount_options(const char *mountdata, const char *devname,
 	}
 #endif
 	if (!vol->UNC) {
-		cifs_dbg(VFS, "CIFS mount error: No usable UNC path provided in device string or in unc= option!\n");
+		cifs_dbg(VFS, "CIFS mount error: No usable UNC path provided in device string!\n");
 		goto cifs_parse_mount_err;
 	}
 
@@ -2283,8 +2291,8 @@ cifs_put_smb_ses(struct cifs_ses *ses)
 
 #ifdef CONFIG_KEYS
 
-/* strlen("cifs:a:") + INET6_ADDRSTRLEN + 1 */
-#define CIFSCREDS_DESC_SIZE (7 + INET6_ADDRSTRLEN + 1)
+/* strlen("cifs:a:") + CIFS_MAX_DOMAINNAME_LEN + 1 */
+#define CIFSCREDS_DESC_SIZE (7 + CIFS_MAX_DOMAINNAME_LEN + 1)
 
 /* Populate username and pw fields from keyring if possible */
 static int
@@ -3274,8 +3282,8 @@ build_unc_path_to_root(const struct smb_vol *vol,
 	pos = full_path + unc_len;
 
 	if (pplen) {
-		*pos++ = CIFS_DIR_SEP(cifs_sb);
-		strncpy(pos, vol->prepath, pplen);
+		*pos = CIFS_DIR_SEP(cifs_sb);
+		strncpy(pos + 1, vol->prepath, pplen);
 		pos += pplen;
 	}
 

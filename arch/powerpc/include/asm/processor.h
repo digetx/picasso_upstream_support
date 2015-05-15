@@ -247,6 +247,10 @@ struct thread_struct {
 	unsigned long	tm_orig_msr;	/* Thread's MSR on ctx switch */
 	struct pt_regs	ckpt_regs;	/* Checkpointed registers */
 
+	unsigned long	tm_tar;
+	unsigned long	tm_ppr;
+	unsigned long	tm_dscr;
+
 	/*
 	 * Transactional FP and VSX 0-31 register set.
 	 * NOTE: the sense of these is the opposite of the integer ckpt_regs!
@@ -284,6 +288,12 @@ struct thread_struct {
 	unsigned long	ebbrr;
 	unsigned long	ebbhr;
 	unsigned long	bescr;
+	unsigned long	siar;
+	unsigned long	sdar;
+	unsigned long	sier;
+	unsigned long	mmcr0;
+	unsigned long	mmcr2;
+	unsigned long	mmcra;
 #endif
 };
 
@@ -403,21 +413,16 @@ static inline void prefetchw(const void *x)
 #endif
 
 #ifdef CONFIG_PPC64
-static inline unsigned long get_clean_sp(struct pt_regs *regs, int is_32)
+static inline unsigned long get_clean_sp(unsigned long sp, int is_32)
 {
-	unsigned long sp;
-
 	if (is_32)
-		sp = regs->gpr[1] & 0x0ffffffffUL;
-	else
-		sp = regs->gpr[1];
-
+		return sp & 0x0ffffffffUL;
 	return sp;
 }
 #else
-static inline unsigned long get_clean_sp(struct pt_regs *regs, int is_32)
+static inline unsigned long get_clean_sp(unsigned long sp, int is_32)
 {
-	return regs->gpr[1];
+	return sp;
 }
 #endif
 

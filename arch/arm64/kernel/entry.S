@@ -121,7 +121,7 @@
 
 	.macro	get_thread_info, rd
 	mov	\rd, sp
-	and	\rd, \rd, #~((1 << 13) - 1)	// top of 8K stack
+	and	\rd, \rd, #~(THREAD_SIZE - 1)	// top of stack
 	.endm
 
 /*
@@ -275,7 +275,6 @@ el1_sp_pc:
 	 * Stack or PC alignment exception handling
 	 */
 	mrs	x0, far_el1
-	mov	x1, x25
 	mov	x2, sp
 	b	do_sp_pc_abort
 el1_undef:
@@ -389,6 +388,16 @@ el0_sync_compat:
 	cmp	x24, #ESR_EL1_EC_FP_EXC32	// FP/ASIMD exception
 	b.eq	el0_fpsimd_exc
 	cmp	x24, #ESR_EL1_EC_UNKNOWN	// unknown exception in EL0
+	b.eq	el0_undef
+	cmp	x24, #ESR_EL1_EC_CP15_32	// CP15 MRC/MCR trap
+	b.eq	el0_undef
+	cmp	x24, #ESR_EL1_EC_CP15_64	// CP15 MRRC/MCRR trap
+	b.eq	el0_undef
+	cmp	x24, #ESR_EL1_EC_CP14_MR	// CP14 MRC/MCR trap
+	b.eq	el0_undef
+	cmp	x24, #ESR_EL1_EC_CP14_LS	// CP14 LDC/STC trap
+	b.eq	el0_undef
+	cmp	x24, #ESR_EL1_EC_CP14_64	// CP14 MRRC/MCRR trap
 	b.eq	el0_undef
 	cmp	x24, #ESR_EL1_EC_BREAKPT_EL0	// debug exception in EL0
 	b.ge	el0_dbg

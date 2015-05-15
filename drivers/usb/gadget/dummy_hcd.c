@@ -923,8 +923,9 @@ static int dummy_udc_stop(struct usb_gadget *g,
 	struct dummy_hcd	*dum_hcd = gadget_to_dummy_hcd(g);
 	struct dummy		*dum = dum_hcd->dum;
 
-	dev_dbg(udc_dev(dum), "unregister gadget driver '%s'\n",
-			driver->driver.name);
+	if (driver)
+		dev_dbg(udc_dev(dum), "unregister gadget driver '%s'\n",
+				driver->driver.name);
 
 	dum->driver = NULL;
 
@@ -1000,9 +1001,8 @@ static int dummy_udc_remove(struct platform_device *pdev)
 {
 	struct dummy	*dum = platform_get_drvdata(pdev);
 
-	usb_del_gadget_udc(&dum->gadget);
-	platform_set_drvdata(pdev, NULL);
 	device_remove_file(&dum->gadget.dev, &dev_attr_function);
+	usb_del_gadget_udc(&dum->gadget);
 	return 0;
 }
 
@@ -2661,8 +2661,10 @@ static int __init init(void)
 	}
 	for (i = 0; i < mod_data.num; i++) {
 		dum[i] = kzalloc(sizeof(struct dummy), GFP_KERNEL);
-		if (!dum[i])
+		if (!dum[i]) {
+			retval = -ENOMEM;
 			goto err_add_pdata;
+		}
 		retval = platform_device_add_data(the_hcd_pdev[i], &dum[i],
 				sizeof(void *));
 		if (retval)

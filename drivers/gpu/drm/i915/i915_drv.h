@@ -491,6 +491,7 @@ enum intel_sbi_destination {
 #define QUIRK_PIPEA_FORCE (1<<0)
 #define QUIRK_LVDS_SSC_DISABLE (1<<1)
 #define QUIRK_INVERT_BRIGHTNESS (1<<2)
+#define QUIRK_NO_PCH_PWM_ENABLE (1<<3)
 
 struct intel_fbdev;
 struct intel_fbc_work;
@@ -1474,9 +1475,10 @@ void i915_hangcheck_elapsed(unsigned long data);
 void i915_handle_error(struct drm_device *dev, bool wedged);
 
 extern void intel_irq_init(struct drm_device *dev);
+extern void intel_pm_init(struct drm_device *dev);
 extern void intel_hpd_init(struct drm_device *dev);
 extern void intel_gt_init(struct drm_device *dev);
-extern void intel_gt_reset(struct drm_device *dev);
+extern void intel_gt_sanitize(struct drm_device *dev);
 
 void i915_error_state_free(struct kref *error_ref);
 
@@ -1696,6 +1698,8 @@ struct drm_gem_object *i915_gem_prime_import(struct drm_device *dev,
 
 struct dma_buf *i915_gem_prime_export(struct drm_device *dev,
 				struct drm_gem_object *gem_obj, int flags);
+
+void i915_gem_restore_fences(struct drm_device *dev);
 
 /* i915_gem_context.c */
 void i915_gem_context_init(struct drm_device *dev);
@@ -1941,6 +1945,21 @@ static inline uint32_t i915_vgacntrl_reg(struct drm_device *dev)
 static inline void __user *to_user_ptr(u64 address)
 {
 	return (void __user *)(uintptr_t)address;
+}
+
+static inline unsigned long msecs_to_jiffies_timeout(const unsigned int m)
+{
+	unsigned long j = msecs_to_jiffies(m);
+
+	return min_t(unsigned long, MAX_JIFFY_OFFSET, j + 1);
+}
+
+static inline unsigned long
+timespec_to_jiffies_timeout(const struct timespec *value)
+{
+	unsigned long j = timespec_to_jiffies(value);
+
+	return min_t(unsigned long, MAX_JIFFY_OFFSET, j + 1);
 }
 
 #endif

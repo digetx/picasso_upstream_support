@@ -35,7 +35,7 @@ struct trace_probe {
 	const char		*symbol;	/* symbol name */
 	struct ftrace_event_class	class;
 	struct ftrace_event_call	call;
-	struct ftrace_event_file	**files;
+	struct ftrace_event_file * __rcu *files;
 	ssize_t			size;		/* trace entry size */
 	unsigned int		nr_args;
 	struct probe_arg	args[];
@@ -90,7 +90,7 @@ static __kprobes bool trace_probe_is_on_module(struct trace_probe *tp)
 }
 
 static int register_probe_event(struct trace_probe *tp);
-static void unregister_probe_event(struct trace_probe *tp);
+static int unregister_probe_event(struct trace_probe *tp);
 
 static DEFINE_MUTEX(probe_lock);
 static LIST_HEAD(probe_list);
@@ -185,9 +185,14 @@ static struct trace_probe *find_trace_probe(const char *event,
 
 static int trace_probe_nr_files(struct trace_probe *tp)
 {
-	struct ftrace_event_file **file = tp->files;
+	struct ftrace_event_file **file;
 	int ret = 0;
 
+	/*
+	 * Since all tp->files updater is protected by probe_enable_lock,
+	 * we don't need to lock an rcu_read_lock.
+	 */
+	file = rcu_dereference_raw(tp->files);
 	if (file)
 		while (*(file++))
 			ret++;
@@ -209,9 +214,10 @@ enable_trace_probe(struct trace_probe *tp, struct ftrace_event_file *file)
 	mutex_lock(&probe_enable_lock);
 
 	if (file) {
-		struct ftrace_event_file **new, **old = tp->files;
+		struct ftrace_event_file **new, **old;
 		int n = trace_probe_nr_files(tp);
 
+		old = rcu_dereference_raw(tp->files);
 		/* 1 is for new one and 1 is for stopper */
 		new = kzalloc((n + 2) * sizeof(struct ftrace_event_file *),
 			      GFP_KERNEL);
@@ -251,11 +257,17 @@ enable_trace_probe(struct trace_probe *tp, struct ftrace_event_file *file)
 static int
 trace_probe_file_index(struct trace_probe *tp, struct ftrace_event_file *file)
 {
+	struct ftrace_event_file **files;
 	int i;
 
-	if (tp->files) {
-		for (i = 0; tp->files[i]; i++)
-			if (tp->files[i] == file)
+	/*
+	 * Since all tp->files updater is protected by probe_enable_lock,
+	 * we don't need to lock an rcu_read_lock.
+	 */
+	files = rcu_dereference_raw(tp->files);
+	if (files) {
+		for (i = 0; files[i]; i++)
+			if (files[i] == file)
 				return i;
 	}
 
@@ -269,15 +281,18 @@ trace_probe_file_index(struct trace_probe *tp, struct ftrace_event_file *file)
 static int
 disable_trace_probe(struct trace_probe *tp, struct ftrace_event_file *file)
 {
+	struct ftrace_event_file **old = NULL;
+	int wait = 0;
 	int ret = 0;
 
 	mutex_lock(&probe_enable_lock);
 
 	if (file) {
-		struct ftrace_event_file **new, **old = tp->files;
+		struct ftrace_event_file **new, **old;
 		int n = trace_probe_nr_files(tp);
 		int i, j;
 
+		old = rcu_dereference_raw(tp->files);
 		if (n == 0 || trace_probe_file_index(tp, file) < 0) {
 			ret = -EINVAL;
 			goto out_unlock;
@@ -301,10 +316,7 @@ disable_trace_probe(struct trace_probe *tp, struct ftrace_event_file *file)
 		}
 
 		rcu_assign_pointer(tp->files, new);
-
-		/* Make sure the probe is done with old files */
-		synchronize_sched();
-		kfree(old);
+		wait = 1;
 	} else
 		tp->flags &= ~TP_FLAG_PROFILE;
 
@@ -313,10 +325,24 @@ disable_trace_probe(struct trace_probe *tp, struct ftrace_event_file *file)
 			disable_kretprobe(&tp->rp);
 		else
 			disable_kprobe(&tp->rp.kp);
+		wait = 1;
 	}
 
  out_unlock:
 	mutex_unlock(&probe_enable_lock);
+
+	if (wait) {
+		/*
+		 * Synchronize with kprobe_trace_func/kretprobe_trace_func
+		 * to ensure disabled (all running handlers are finished).
+		 * This is not only for kfree(), but also the caller,
+		 * trace_remove_event_call() supposes it for releasing
+		 * event_call related objects, which will be accessed in
+		 * the kprobe_trace_func/kretprobe_trace_func.
+		 */
+		synchronize_sched();
+		kfree(old);	/* Ignored if link == NULL */
+	}
 
 	return ret;
 }
@@ -385,9 +411,12 @@ static int unregister_trace_probe(struct trace_probe *tp)
 	if (trace_probe_is_enabled(tp))
 		return -EBUSY;
 
+	/* Will fail if probe is being used by ftrace or perf */
+	if (unregister_probe_event(tp))
+		return -EBUSY;
+
 	__unregister_trace_probe(tp);
 	list_del(&tp->list);
-	unregister_probe_event(tp);
 
 	return 0;
 }
@@ -666,7 +695,9 @@ static int release_all_trace_probes(void)
 	/* TODO: Use batch unregistration */
 	while (!list_empty(&probe_list)) {
 		tp = list_entry(probe_list.next, struct trace_probe, list);
-		unregister_trace_probe(tp);
+		ret = unregister_trace_probe(tp);
+		if (ret)
+			goto end;
 		free_trace_probe(tp);
 	}
 
@@ -872,9 +903,16 @@ __kprobe_trace_func(struct trace_probe *tp, struct pt_regs *regs,
 static __kprobes void
 kprobe_trace_func(struct trace_probe *tp, struct pt_regs *regs)
 {
-	struct ftrace_event_file **file = tp->files;
+	/*
+	 * Note: preempt is already disabled around the kprobe handler.
+	 * However, we still need an smp_read_barrier_depends() corresponding
+	 * to smp_wmb() in rcu_assign_pointer() to access the pointer.
+	 */
+	struct ftrace_event_file **file = rcu_dereference_raw(tp->files);
 
-	/* Note: preempt is already disabled around the kprobe handler */
+	if (unlikely(!file))
+		return;
+
 	while (*file) {
 		__kprobe_trace_func(tp, regs, *file);
 		file++;
@@ -925,9 +963,16 @@ static __kprobes void
 kretprobe_trace_func(struct trace_probe *tp, struct kretprobe_instance *ri,
 		     struct pt_regs *regs)
 {
-	struct ftrace_event_file **file = tp->files;
+	/*
+	 * Note: preempt is already disabled around the kprobe handler.
+	 * However, we still need an smp_read_barrier_depends() corresponding
+	 * to smp_wmb() in rcu_assign_pointer() to access the pointer.
+	 */
+	struct ftrace_event_file **file = rcu_dereference_raw(tp->files);
 
-	/* Note: preempt is already disabled around the kprobe handler */
+	if (unlikely(!file))
+		return;
+
 	while (*file) {
 		__kretprobe_trace_func(tp, ri, regs, *file);
 		file++;
@@ -935,7 +980,7 @@ kretprobe_trace_func(struct trace_probe *tp, struct kretprobe_instance *ri,
 }
 
 /* Event entry printers */
-enum print_line_t
+static enum print_line_t
 print_kprobe_event(struct trace_iterator *iter, int flags,
 		   struct trace_event *event)
 {
@@ -971,7 +1016,7 @@ partial:
 	return TRACE_TYPE_PARTIAL_LINE;
 }
 
-enum print_line_t
+static enum print_line_t
 print_kretprobe_event(struct trace_iterator *iter, int flags,
 		      struct trace_event *event)
 {
@@ -1285,11 +1330,15 @@ static int register_probe_event(struct trace_probe *tp)
 	return ret;
 }
 
-static void unregister_probe_event(struct trace_probe *tp)
+static int unregister_probe_event(struct trace_probe *tp)
 {
+	int ret;
+
 	/* tp->event is unregistered in trace_remove_event_call() */
-	trace_remove_event_call(&tp->call);
-	kfree(tp->call.print_fmt);
+	ret = trace_remove_event_call(&tp->call);
+	if (!ret)
+		kfree(tp->call.print_fmt);
+	return ret;
 }
 
 /* Make a debugfs interface for controlling probe points */

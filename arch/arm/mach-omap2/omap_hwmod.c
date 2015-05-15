@@ -399,7 +399,7 @@ static int _set_clockactivity(struct omap_hwmod *oh, u8 clockact, u32 *v)
 }
 
 /**
- * _set_softreset: set OCP_SYSCONFIG.CLOCKACTIVITY bits in @v
+ * _set_softreset: set OCP_SYSCONFIG.SOFTRESET bit in @v
  * @oh: struct omap_hwmod *
  * @v: pointer to register contents to modify
  *
@@ -422,6 +422,36 @@ static int _set_softreset(struct omap_hwmod *oh, u32 *v)
 	softrst_mask = (0x1 << oh->class->sysc->sysc_fields->srst_shift);
 
 	*v |= softrst_mask;
+
+	return 0;
+}
+
+/**
+ * _clear_softreset: clear OCP_SYSCONFIG.SOFTRESET bit in @v
+ * @oh: struct omap_hwmod *
+ * @v: pointer to register contents to modify
+ *
+ * Clear the SOFTRESET bit in @v for hwmod @oh.  Returns -EINVAL upon
+ * error or 0 upon success.
+ */
+static int _clear_softreset(struct omap_hwmod *oh, u32 *v)
+{
+	u32 softrst_mask;
+
+	if (!oh->class->sysc ||
+	    !(oh->class->sysc->sysc_flags & SYSC_HAS_SOFTRESET))
+		return -EINVAL;
+
+	if (!oh->class->sysc->sysc_fields) {
+		WARN(1,
+		     "omap_hwmod: %s: sysc_fields absent for sysconfig class\n",
+		     oh->name);
+		return -EINVAL;
+	}
+
+	softrst_mask = (0x1 << oh->class->sysc->sysc_fields->srst_shift);
+
+	*v &= ~softrst_mask;
 
 	return 0;
 }
@@ -1356,13 +1386,27 @@ static void _enable_sysc(struct omap_hwmod *oh)
 
 	clkdm = _get_clkdm(oh);
 	if (sf & SYSC_HAS_SIDLEMODE) {
+		if (oh->flags & HWMOD_SWSUP_SIDLE ||
+		    oh->flags & HWMOD_SWSUP_SIDLE_ACT) {
+			idlemode = HWMOD_IDLEMODE_NO;
+		} else {
+			if (sf & SYSC_HAS_ENAWAKEUP)
+				_enable_wakeup(oh, &v);
+			if (oh->class->sysc->idlemodes & SIDLE_SMART_WKUP)
+				idlemode = HWMOD_IDLEMODE_SMART_WKUP;
+			else
+				idlemode = HWMOD_IDLEMODE_SMART;
+		}
+
+		/*
+		 * This is special handling for some IPs like
+		 * 32k sync timer. Force them to idle!
+		 */
 		clkdm_act = (clkdm && clkdm->flags & CLKDM_ACTIVE_WITH_MPU);
 		if (clkdm_act && !(oh->class->sysc->idlemodes &
 				   (SIDLE_SMART | SIDLE_SMART_WKUP)))
 			idlemode = HWMOD_IDLEMODE_FORCE;
-		else
-			idlemode = (oh->flags & HWMOD_SWSUP_SIDLE) ?
-				HWMOD_IDLEMODE_NO : HWMOD_IDLEMODE_SMART;
+
 		_set_slave_idlemode(oh, idlemode, &v);
 	}
 
@@ -1390,10 +1434,6 @@ static void _enable_sysc(struct omap_hwmod *oh)
 	if ((oh->flags & HWMOD_SET_DEFAULT_CLOCKACT) &&
 	    (sf & SYSC_HAS_CLOCKACTIVITY))
 		_set_clockactivity(oh, oh->class->sysc->clockact, &v);
-
-	/* If slave is in SMARTIDLE, also enable wakeup */
-	if ((sf & SYSC_HAS_SIDLEMODE) && !(oh->flags & HWMOD_SWSUP_SIDLE))
-		_enable_wakeup(oh, &v);
 
 	_write_sysconfig(v, oh);
 
@@ -1430,13 +1470,16 @@ static void _idle_sysc(struct omap_hwmod *oh)
 	sf = oh->class->sysc->sysc_flags;
 
 	if (sf & SYSC_HAS_SIDLEMODE) {
-		/* XXX What about HWMOD_IDLEMODE_SMART_WKUP? */
-		if (oh->flags & HWMOD_SWSUP_SIDLE ||
-		    !(oh->class->sysc->idlemodes &
-		      (SIDLE_SMART | SIDLE_SMART_WKUP)))
+		if (oh->flags & HWMOD_SWSUP_SIDLE) {
 			idlemode = HWMOD_IDLEMODE_FORCE;
-		else
-			idlemode = HWMOD_IDLEMODE_SMART;
+		} else {
+			if (sf & SYSC_HAS_ENAWAKEUP)
+				_enable_wakeup(oh, &v);
+			if (oh->class->sysc->idlemodes & SIDLE_SMART_WKUP)
+				idlemode = HWMOD_IDLEMODE_SMART_WKUP;
+			else
+				idlemode = HWMOD_IDLEMODE_SMART;
+		}
 		_set_slave_idlemode(oh, idlemode, &v);
 	}
 
@@ -1454,10 +1497,6 @@ static void _idle_sysc(struct omap_hwmod *oh)
 		}
 		_set_master_standbymode(oh, idlemode, &v);
 	}
-
-	/* If slave is in SMARTIDLE, also enable wakeup */
-	if ((sf & SYSC_HAS_SIDLEMODE) && !(oh->flags & HWMOD_SWSUP_SIDLE))
-		_enable_wakeup(oh, &v);
 
 	_write_sysconfig(v, oh);
 }
@@ -1900,6 +1939,12 @@ static int _ocp_softreset(struct omap_hwmod *oh)
 	ret = _set_softreset(oh, &v);
 	if (ret)
 		goto dis_opt_clks;
+
+	_write_sysconfig(v, oh);
+	ret = _clear_softreset(oh, &v);
+	if (ret)
+		goto dis_opt_clks;
+
 	_write_sysconfig(v, oh);
 
 	if (oh->class->sysc->srst_udelay)
@@ -2065,7 +2110,7 @@ static int _omap4_get_context_lost(struct omap_hwmod *oh)
  * do so is present in the hwmod data, then call it and pass along the
  * return value; otherwise, return 0.
  */
-static int __init _enable_preprogram(struct omap_hwmod *oh)
+static int _enable_preprogram(struct omap_hwmod *oh)
 {
 	if (!oh->class->enable_preprogram)
 		return 0;
@@ -2131,6 +2176,8 @@ static int _enable(struct omap_hwmod *oh)
 			((oh->_state == _HWMOD_STATE_IDLE) &&
 			 oh->mux->pads_dynamic))) {
 		omap_hwmod_mux(oh->mux, _HWMOD_STATE_ENABLED);
+		_reconfigure_io_chain();
+	} else if (oh->flags & HWMOD_FORCE_MSTANDBY) {
 		_reconfigure_io_chain();
 	}
 
@@ -2238,47 +2285,13 @@ static int _idle(struct omap_hwmod *oh)
 	if (oh->mux && oh->mux->pads_dynamic) {
 		omap_hwmod_mux(oh->mux, _HWMOD_STATE_IDLE);
 		_reconfigure_io_chain();
+	} else if (oh->flags & HWMOD_FORCE_MSTANDBY) {
+		_reconfigure_io_chain();
 	}
 
 	oh->_state = _HWMOD_STATE_IDLE;
 
 	return 0;
-}
-
-/**
- * omap_hwmod_set_ocp_autoidle - set the hwmod's OCP autoidle bit
- * @oh: struct omap_hwmod *
- * @autoidle: desired AUTOIDLE bitfield value (0 or 1)
- *
- * Sets the IP block's OCP autoidle bit in hardware, and updates our
- * local copy. Intended to be used by drivers that require
- * direct manipulation of the AUTOIDLE bits.
- * Returns -EINVAL if @oh is null or is not in the ENABLED state, or passes
- * along the return value from _set_module_autoidle().
- *
- * Any users of this function should be scrutinized carefully.
- */
-int omap_hwmod_set_ocp_autoidle(struct omap_hwmod *oh, u8 autoidle)
-{
-	u32 v;
-	int retval = 0;
-	unsigned long flags;
-
-	if (!oh || oh->_state != _HWMOD_STATE_ENABLED)
-		return -EINVAL;
-
-	spin_lock_irqsave(&oh->_lock, flags);
-
-	v = oh->_sysc_cache;
-
-	retval = _set_module_autoidle(oh, autoidle, &v);
-
-	if (!retval)
-		_write_sysconfig(v, oh);
-
-	spin_unlock_irqrestore(&oh->_lock, flags);
-
-	return retval;
 }
 
 /**
@@ -3175,40 +3188,13 @@ int omap_hwmod_softreset(struct omap_hwmod *oh)
 		goto error;
 	_write_sysconfig(v, oh);
 
+	ret = _clear_softreset(oh, &v);
+	if (ret)
+		goto error;
+	_write_sysconfig(v, oh);
+
 error:
 	return ret;
-}
-
-/**
- * omap_hwmod_set_slave_idlemode - set the hwmod's OCP slave idlemode
- * @oh: struct omap_hwmod *
- * @idlemode: SIDLEMODE field bits (shifted to bit 0)
- *
- * Sets the IP block's OCP slave idlemode in hardware, and updates our
- * local copy.  Intended to be used by drivers that have some erratum
- * that requires direct manipulation of the SIDLEMODE bits.  Returns
- * -EINVAL if @oh is null, or passes along the return value from
- * _set_slave_idlemode().
- *
- * XXX Does this function have any current users?  If not, we should
- * remove it; it is better to let the rest of the hwmod code handle this.
- * Any users of this function should be scrutinized carefully.
- */
-int omap_hwmod_set_slave_idlemode(struct omap_hwmod *oh, u8 idlemode)
-{
-	u32 v;
-	int retval = 0;
-
-	if (!oh)
-		return -EINVAL;
-
-	v = oh->_sysc_cache;
-
-	retval = _set_slave_idlemode(oh, idlemode, &v);
-	if (!retval)
-		_write_sysconfig(v, oh);
-
-	return retval;
 }
 
 /**

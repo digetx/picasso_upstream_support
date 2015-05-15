@@ -33,6 +33,7 @@
 #include <asm/irqflags.h>
 #include <asm/ftrace.h>
 #include <asm/hw_irq.h>
+#include <asm/context_tracking.h>
 
 /*
  * System calls.
@@ -376,8 +377,6 @@ _GLOBAL(ret_from_fork)
 _GLOBAL(ret_from_kernel_thread)
 	bl	.schedule_tail
 	REST_NVGPRS(r1)
-	li	r3,0
-	std	r3,0(r1)
 	ld	r14, 0(r14)
 	mtlr	r14
 	mr	r3,r15
@@ -450,15 +449,6 @@ END_FTR_SECTION_IFSET(CPU_FTR_DSCR)
 
 #ifdef CONFIG_PPC_BOOK3S_64
 BEGIN_FTR_SECTION
-	/*
-	 * Back up the TAR across context switches.  Note that the TAR is not
-	 * available for use in the kernel.  (To provide this, the TAR should
-	 * be backed up/restored on exception entry/exit instead, and be in
-	 * pt_regs.  FIXME, this should be in pt_regs anyway (for debug).)
-	 */
-	mfspr	r0,SPRN_TAR
-	std	r0,THREAD_TAR(r3)
-
 	/* Event based branch registers */
 	mfspr	r0, SPRN_BESCR
 	std	r0, THREAD_BESCR(r3)
@@ -487,6 +477,13 @@ END_FTR_SECTION_IFSET(CPU_FTR_ARCH_207S)
 BEGIN_FTR_SECTION
 	ldarx	r6,0,r1
 END_FTR_SECTION_IFSET(CPU_FTR_STCX_CHECKS_ADDRESS)
+
+#ifdef CONFIG_PPC_BOOK3S
+/* Cancel all explict user streams as they will have no use after context
+ * switch and will stop the HW from creating streams itself
+ */
+	DCBT_STOP_ALL_STREAM_IDS(r6)
+#endif
 
 	addi	r6,r4,-THREAD	/* Convert THREAD to 'current' */
 	std	r6,PACACURRENT(r13)	/* Set new 'current' */
@@ -578,9 +575,34 @@ BEGIN_FTR_SECTION
 	ld	r7,DSCR_DEFAULT@toc(2)
 	ld	r0,THREAD_DSCR(r4)
 	cmpwi	r6,0
+	li	r8, FSCR_DSCR
 	bne	1f
 	ld	r0,0(r7)
-1:	cmpd	r0,r25
+	b	3f
+1:
+  BEGIN_FTR_SECTION_NESTED(70)
+	mfspr	r6, SPRN_FSCR
+	or	r6, r6, r8
+	mtspr	SPRN_FSCR, r6
+    BEGIN_FTR_SECTION_NESTED(69)
+	mfspr	r6, SPRN_HFSCR
+	or	r6, r6, r8
+	mtspr	SPRN_HFSCR, r6
+    END_FTR_SECTION_NESTED(CPU_FTR_HVMODE, CPU_FTR_HVMODE, 69)
+	b	4f
+  END_FTR_SECTION_NESTED(CPU_FTR_ARCH_207S, CPU_FTR_ARCH_207S, 70)
+3:
+  BEGIN_FTR_SECTION_NESTED(70)
+	mfspr	r6, SPRN_FSCR
+	andc	r6, r6, r8
+	mtspr	SPRN_FSCR, r6
+    BEGIN_FTR_SECTION_NESTED(69)
+	mfspr	r6, SPRN_HFSCR
+	andc	r6, r6, r8
+	mtspr	SPRN_HFSCR, r6
+    END_FTR_SECTION_NESTED(CPU_FTR_HVMODE, CPU_FTR_HVMODE, 69)
+  END_FTR_SECTION_NESTED(CPU_FTR_ARCH_207S, CPU_FTR_ARCH_207S, 70)
+4:	cmpd	r0,r25
 	beq	2f
 	mtspr	SPRN_DSCR,r0
 2:
@@ -634,7 +656,7 @@ _GLOBAL(ret_from_except_lite)
 	andi.	r0,r4,_TIF_NEED_RESCHED
 	beq	1f
 	bl	.restore_interrupts
-	bl	.schedule
+	SCHEDULE_USER
 	b	.ret_from_except_lite
 
 1:	bl	.save_nvgprs

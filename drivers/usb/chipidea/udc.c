@@ -103,7 +103,7 @@ static int hw_ep_flush(struct ci13xxx *ci, int num, int dir)
 
 	do {
 		/* flush any pending transfer */
-		hw_write(ci, OP_ENDPTFLUSH, BIT(n), BIT(n));
+		hw_write(ci, OP_ENDPTFLUSH, ~0, BIT(n));
 		while (hw_read(ci, OP_ENDPTFLUSH, BIT(n)))
 			cpu_relax();
 	} while (hw_read(ci, OP_ENDPTSTAT, BIT(n)));
@@ -203,7 +203,7 @@ static int hw_ep_prime(struct ci13xxx *ci, int num, int dir, int is_ctrl)
 	if (is_ctrl && dir == RX && hw_read(ci, OP_ENDPTSETUPSTAT, BIT(num)))
 		return -EAGAIN;
 
-	hw_write(ci, OP_ENDPTPRIME, BIT(n), BIT(n));
+	hw_write(ci, OP_ENDPTPRIME, ~0, BIT(n));
 
 	while (hw_read(ci, OP_ENDPTPRIME, BIT(n)))
 		cpu_relax();
@@ -1678,8 +1678,11 @@ static int udc_start(struct ci13xxx *ci)
 
 	ci->gadget.ep0 = &ci->ep0in->ep;
 
-	if (ci->global_phy)
+	if (ci->global_phy) {
 		ci->transceiver = usb_get_phy(USB_PHY_TYPE_USB2);
+		if (IS_ERR(ci->transceiver))
+			ci->transceiver = NULL;
+	}
 
 	if (ci->platdata->flags & CI13XXX_REQUIRE_TRANSCEIVER) {
 		if (ci->transceiver == NULL) {
@@ -1694,7 +1697,7 @@ static int udc_start(struct ci13xxx *ci)
 			goto put_transceiver;
 	}
 
-	if (!IS_ERR_OR_NULL(ci->transceiver)) {
+	if (ci->transceiver) {
 		retval = otg_set_peripheral(ci->transceiver->otg,
 						&ci->gadget);
 		if (retval)
@@ -1711,7 +1714,7 @@ static int udc_start(struct ci13xxx *ci)
 	return retval;
 
 remove_trans:
-	if (!IS_ERR_OR_NULL(ci->transceiver)) {
+	if (ci->transceiver) {
 		otg_set_peripheral(ci->transceiver->otg, NULL);
 		if (ci->global_phy)
 			usb_put_phy(ci->transceiver);
@@ -1719,7 +1722,7 @@ remove_trans:
 
 	dev_err(dev, "error = %i\n", retval);
 put_transceiver:
-	if (!IS_ERR_OR_NULL(ci->transceiver) && ci->global_phy)
+	if (ci->transceiver && ci->global_phy)
 		usb_put_phy(ci->transceiver);
 destroy_eps:
 	destroy_eps(ci);
@@ -1747,7 +1750,7 @@ static void udc_stop(struct ci13xxx *ci)
 	dma_pool_destroy(ci->td_pool);
 	dma_pool_destroy(ci->qh_pool);
 
-	if (!IS_ERR_OR_NULL(ci->transceiver)) {
+	if (ci->transceiver) {
 		otg_set_peripheral(ci->transceiver->otg, NULL);
 		if (ci->global_phy)
 			usb_put_phy(ci->transceiver);

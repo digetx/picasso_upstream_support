@@ -228,38 +228,37 @@ static int nfs41_setup_state_renewal(struct nfs_client *clp)
 	return status;
 }
 
-/*
- * Back channel returns NFS4ERR_DELAY for new requests when
- * NFS4_SESSION_DRAINING is set so there is no work to be done when draining
- * is ended.
- */
-static void nfs4_end_drain_session(struct nfs_client *clp)
+static void nfs4_end_drain_slot_table(struct nfs4_slot_table *tbl)
 {
-	struct nfs4_session *ses = clp->cl_session;
-	struct nfs4_slot_table *tbl;
-
-	if (ses == NULL)
-		return;
-	tbl = &ses->fc_slot_table;
-	if (test_and_clear_bit(NFS4_SESSION_DRAINING, &ses->session_state)) {
+	if (test_and_clear_bit(NFS4_SLOT_TBL_DRAINING, &tbl->slot_tbl_state)) {
 		spin_lock(&tbl->slot_tbl_lock);
 		nfs41_wake_slot_table(tbl);
 		spin_unlock(&tbl->slot_tbl_lock);
 	}
 }
 
+static void nfs4_end_drain_session(struct nfs_client *clp)
+{
+	struct nfs4_session *ses = clp->cl_session;
+
+	if (ses != NULL) {
+		nfs4_end_drain_slot_table(&ses->bc_slot_table);
+		nfs4_end_drain_slot_table(&ses->fc_slot_table);
+	}
+}
+
 /*
  * Signal state manager thread if session fore channel is drained
  */
-void nfs4_session_drain_complete(struct nfs4_session *session,
-		struct nfs4_slot_table *tbl)
+void nfs4_slot_tbl_drain_complete(struct nfs4_slot_table *tbl)
 {
-	if (nfs4_session_draining(session))
+	if (nfs4_slot_tbl_draining(tbl))
 		complete(&tbl->complete);
 }
 
-static int nfs4_wait_on_slot_tbl(struct nfs4_slot_table *tbl)
+static int nfs4_drain_slot_tbl(struct nfs4_slot_table *tbl)
 {
+	set_bit(NFS4_SLOT_TBL_DRAINING, &tbl->slot_tbl_state);
 	spin_lock(&tbl->slot_tbl_lock);
 	if (tbl->highest_used_slotid != NFS4_NO_SLOT) {
 		INIT_COMPLETION(tbl->complete);
@@ -275,13 +274,12 @@ static int nfs4_begin_drain_session(struct nfs_client *clp)
 	struct nfs4_session *ses = clp->cl_session;
 	int ret = 0;
 
-	set_bit(NFS4_SESSION_DRAINING, &ses->session_state);
 	/* back channel */
-	ret = nfs4_wait_on_slot_tbl(&ses->bc_slot_table);
+	ret = nfs4_drain_slot_tbl(&ses->bc_slot_table);
 	if (ret)
 		return ret;
 	/* fore channel */
-	return nfs4_wait_on_slot_tbl(&ses->fc_slot_table);
+	return nfs4_drain_slot_tbl(&ses->fc_slot_table);
 }
 
 static void nfs41_finish_session_reset(struct nfs_client *clp)
@@ -1701,7 +1699,8 @@ restart:
 			if (status < 0) {
 				set_bit(ops->owner_flag_bit, &sp->so_flags);
 				nfs4_put_state_owner(sp);
-				return nfs4_recovery_handle_error(clp, status);
+				status = nfs4_recovery_handle_error(clp, status);
+				return (status != 0) ? status : -EAGAIN;
 			}
 
 			nfs4_put_state_owner(sp);
@@ -1710,7 +1709,7 @@ restart:
 		spin_unlock(&clp->cl_lock);
 	}
 	rcu_read_unlock();
-	return status;
+	return 0;
 }
 
 static int nfs4_check_lease(struct nfs_client *clp)
@@ -1757,7 +1756,6 @@ static int nfs4_handle_reclaim_lease_error(struct nfs_client *clp, int status)
 		break;
 	case -NFS4ERR_STALE_CLIENTID:
 		clear_bit(NFS4CLNT_LEASE_CONFIRM, &clp->cl_state);
-		nfs4_state_clear_reclaim_reboot(clp);
 		nfs4_state_start_reclaim_reboot(clp);
 		break;
 	case -NFS4ERR_CLID_INUSE:
@@ -2176,14 +2174,11 @@ static void nfs4_state_manager(struct nfs_client *clp)
 			section = "reclaim reboot";
 			status = nfs4_do_reclaim(clp,
 				clp->cl_mvops->reboot_recovery_ops);
-			if (test_bit(NFS4CLNT_LEASE_EXPIRED, &clp->cl_state) ||
-			    test_bit(NFS4CLNT_SESSION_RESET, &clp->cl_state))
-				continue;
-			nfs4_state_end_reclaim_reboot(clp);
-			if (test_bit(NFS4CLNT_RECLAIM_NOGRACE, &clp->cl_state))
+			if (status == -EAGAIN)
 				continue;
 			if (status < 0)
 				goto out_error;
+			nfs4_state_end_reclaim_reboot(clp);
 		}
 
 		/* Now recover expired state... */
@@ -2191,9 +2186,7 @@ static void nfs4_state_manager(struct nfs_client *clp)
 			section = "reclaim nograce";
 			status = nfs4_do_reclaim(clp,
 				clp->cl_mvops->nograce_recovery_ops);
-			if (test_bit(NFS4CLNT_LEASE_EXPIRED, &clp->cl_state) ||
-			    test_bit(NFS4CLNT_SESSION_RESET, &clp->cl_state) ||
-			    test_bit(NFS4CLNT_RECLAIM_REBOOT, &clp->cl_state))
+			if (status == -EAGAIN)
 				continue;
 			if (status < 0)
 				goto out_error;

@@ -79,10 +79,6 @@ struct ath_config {
 		       sizeof(struct ath_buf_state));		\
 	} while (0)
 
-#define ATH_RXBUF_RESET(_bf) do {		\
-		(_bf)->bf_stale = false;	\
-	} while (0)
-
 /**
  * enum buffer_type - Buffer type flags
  *
@@ -251,9 +247,9 @@ struct ath_atx_tid {
 	int tidno;
 	int baw_head;   /* first un-acked tx buffer */
 	int baw_tail;   /* next unused tx buffer slot */
-	int sched;
-	int paused;
-	u8 state;
+	bool sched;
+	bool paused;
+	bool active;
 };
 
 struct ath_node {
@@ -273,10 +269,6 @@ struct ath_node {
 	struct dentry *node_stat;
 #endif
 };
-
-#define AGGR_CLEANUP         BIT(1)
-#define AGGR_ADDBA_COMPLETE  BIT(2)
-#define AGGR_ADDBA_PROGRESS  BIT(3)
 
 struct ath_tx_control {
 	struct ath_txq *txq;
@@ -320,6 +312,7 @@ struct ath_rx {
 	struct ath_descdma rxdma;
 	struct ath_rx_edma rx_edma[ATH9K_RX_QUEUE_MAX];
 
+	struct ath_buf *buf_hold;
 	struct sk_buff *frag;
 
 	u32 ampdu_ref;
