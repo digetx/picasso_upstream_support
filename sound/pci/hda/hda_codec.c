@@ -338,8 +338,10 @@ int snd_hda_get_sub_nodes(struct hda_codec *codec, hda_nid_t nid,
 	unsigned int parm;
 
 	parm = snd_hda_param_read(codec, nid, AC_PAR_NODE_COUNT);
-	if (parm == -1)
+	if (parm == -1) {
+		*start_id = 0;
 		return 0;
+	}
 	*start_id = (parm >> 16) & 0x7fff;
 	return (int)(parm & 0x7fff);
 }
@@ -932,7 +934,7 @@ int snd_hda_bus_new(struct snd_card *card,
 }
 EXPORT_SYMBOL_GPL(snd_hda_bus_new);
 
-#ifdef CONFIG_SND_HDA_GENERIC
+#if IS_ENABLED(CONFIG_SND_HDA_GENERIC)
 #define is_generic_config(codec) \
 	(codec->modelname && !strcmp(codec->modelname, "generic"))
 #else
@@ -1339,23 +1341,15 @@ get_hda_cvt_setup(struct hda_codec *codec, hda_nid_t nid)
 /*
  * Dynamic symbol binding for the codec parsers
  */
-#ifdef MODULE
-#define load_parser_sym(sym)		((int (*)(struct hda_codec *))symbol_request(sym))
-#define unload_parser_addr(addr)	symbol_put_addr(addr)
-#else
-#define load_parser_sym(sym)		(sym)
-#define unload_parser_addr(addr)	do {} while (0)
-#endif
 
 #define load_parser(codec, sym) \
-	((codec)->parser = load_parser_sym(sym))
+	((codec)->parser = (int (*)(struct hda_codec *))symbol_request(sym))
 
 static void unload_parser(struct hda_codec *codec)
 {
-	if (codec->parser) {
-		unload_parser_addr(codec->parser);
-		codec->parser = NULL;
-	}
+	if (codec->parser)
+		symbol_put_addr(codec->parser);
+	codec->parser = NULL;
 }
 
 /*
@@ -1570,7 +1564,7 @@ int snd_hda_codec_update_widgets(struct hda_codec *codec)
 EXPORT_SYMBOL_GPL(snd_hda_codec_update_widgets);
 
 
-#ifdef CONFIG_SND_HDA_CODEC_HDMI
+#if IS_ENABLED(CONFIG_SND_HDA_CODEC_HDMI)
 /* if all audio out widgets are digital, let's assume the codec as a HDMI/DP */
 static bool is_likely_hdmi_codec(struct hda_codec *codec)
 {
@@ -1620,12 +1614,20 @@ int snd_hda_codec_configure(struct hda_codec *codec)
 		patch = codec->preset->patch;
 	if (!patch) {
 		unload_parser(codec); /* to be sure */
-		if (is_likely_hdmi_codec(codec))
+		if (is_likely_hdmi_codec(codec)) {
+#if IS_MODULE(CONFIG_SND_HDA_CODEC_HDMI)
 			patch = load_parser(codec, snd_hda_parse_hdmi_codec);
-#ifdef CONFIG_SND_HDA_GENERIC
-		if (!patch)
-			patch = load_parser(codec, snd_hda_parse_generic_codec);
+#elif IS_BUILTIN(CONFIG_SND_HDA_CODEC_HDMI)
+			patch = snd_hda_parse_hdmi_codec;
 #endif
+		}
+		if (!patch) {
+#if IS_MODULE(CONFIG_SND_HDA_GENERIC)
+			patch = load_parser(codec, snd_hda_parse_generic_codec);
+#elif IS_BUILTIN(CONFIG_SND_HDA_GENERIC)
+			patch = snd_hda_parse_generic_codec;
+#endif
+		}
 		if (!patch) {
 			printk(KERN_ERR "hda-codec: No codec parser is available\n");
 			return -ENODEV;
@@ -2078,6 +2080,16 @@ static void put_vol_mute(struct hda_codec *codec, unsigned int amp_caps,
 	else
 		parm |= val;
 	snd_hda_codec_write(codec, nid, 0, AC_VERB_SET_AMP_GAIN_MUTE, parm);
+}
+
+/* meta hook to call each driver's vmaster hook */
+static void vmaster_hook(void *private_data, int enabled)
+{
+	struct hda_vmaster_mute_hook *hook = private_data;
+
+	if (hook->mute_mode != HDA_VMUTE_FOLLOW_MASTER)
+		enabled = hook->mute_mode;
+	hook->hook(hook->codec, enabled);
 }
 
 /**
@@ -2915,9 +2927,9 @@ int snd_hda_add_vmaster_hook(struct hda_codec *codec,
 
 	if (!hook->hook || !hook->sw_kctl)
 		return 0;
-	snd_ctl_add_vmaster_hook(hook->sw_kctl, hook->hook, codec);
 	hook->codec = codec;
 	hook->mute_mode = HDA_VMUTE_FOLLOW_MASTER;
+	snd_ctl_add_vmaster_hook(hook->sw_kctl, vmaster_hook, hook);
 	if (!expose_enum_ctl)
 		return 0;
 	kctl = snd_ctl_new1(&vmaster_mute_mode, hook);
@@ -2940,14 +2952,7 @@ void snd_hda_sync_vmaster_hook(struct hda_vmaster_mute_hook *hook)
 	 */
 	if (hook->codec->bus->shutdown)
 		return;
-	switch (hook->mute_mode) {
-	case HDA_VMUTE_FOLLOW_MASTER:
-		snd_ctl_sync_vmaster_hook(hook->sw_kctl);
-		break;
-	default:
-		hook->hook(hook->codec, hook->mute_mode);
-		break;
-	}
+	snd_ctl_sync_vmaster_hook(hook->sw_kctl);
 }
 EXPORT_SYMBOL_GPL(snd_hda_sync_vmaster_hook);
 

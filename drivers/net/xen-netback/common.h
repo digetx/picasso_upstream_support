@@ -113,6 +113,11 @@ struct xenvif {
 	domid_t          domid;
 	unsigned int     handle;
 
+	/* Is this interface disabled? True when backend discovers
+	 * frontend is rogue.
+	 */
+	bool disabled;
+
 	/* Use NAPI for guest TX */
 	struct napi_struct napi;
 	/* When feature-split-event-channels = 0, tx_irq = rx_irq. */
@@ -143,11 +148,7 @@ struct xenvif {
 	char rx_irq_name[IFNAMSIZ+4]; /* DEVNAME-rx */
 	struct xen_netif_rx_back_ring rx;
 	struct sk_buff_head rx_queue;
-	bool rx_queue_stopped;
-	/* Set when the RX interrupt is triggered by the frontend.
-	 * The worker thread may need to wake the queue.
-	 */
-	bool rx_event;
+	RING_IDX rx_last_skb_slots;
 
 	/* This array is allocated seperately as it is large */
 	struct gnttab_copy *grant_copy_op;

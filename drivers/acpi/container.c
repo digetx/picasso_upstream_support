@@ -79,9 +79,10 @@ static int container_device_attach(struct acpi_device *adev,
 	ACPI_COMPANION_SET(dev, adev);
 	dev->release = acpi_container_release;
 	ret = device_register(dev);
-	if (ret)
+	if (ret) {
+		put_device(dev);
 		return ret;
-
+	}
 	adev->driver_data = dev;
 	return 1;
 }
@@ -95,6 +96,13 @@ static void container_device_detach(struct acpi_device *adev)
 		device_unregister(dev);
 }
 
+static void container_device_online(struct acpi_device *adev)
+{
+	struct device *dev = acpi_driver_data(adev);
+
+	kobject_uevent(&dev->kobj, KOBJ_ONLINE);
+}
+
 static struct acpi_scan_handler container_handler = {
 	.ids = container_device_ids,
 	.attach = container_device_attach,
@@ -102,6 +110,7 @@ static struct acpi_scan_handler container_handler = {
 	.hotplug = {
 		.enabled = true,
 		.demand_offline = true,
+		.notify_online = container_device_online,
 	},
 };
 

@@ -263,7 +263,9 @@ static int davinci_mcasp_set_dai_fmt(struct snd_soc_dai *cpu_dai,
 					 unsigned int fmt)
 {
 	struct davinci_mcasp *mcasp = snd_soc_dai_get_drvdata(cpu_dai);
+	int ret = 0;
 
+	pm_runtime_get_sync(mcasp->dev);
 	switch (fmt & SND_SOC_DAIFMT_FORMAT_MASK) {
 	case SND_SOC_DAIFMT_DSP_B:
 	case SND_SOC_DAIFMT_AC97:
@@ -317,7 +319,8 @@ static int davinci_mcasp_set_dai_fmt(struct snd_soc_dai *cpu_dai,
 		break;
 
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
 
 	switch (fmt & SND_SOC_DAIFMT_INV_MASK) {
@@ -354,10 +357,12 @@ static int davinci_mcasp_set_dai_fmt(struct snd_soc_dai *cpu_dai,
 		break;
 
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		break;
 	}
-
-	return 0;
+out:
+	pm_runtime_put_sync(mcasp->dev);
+	return ret;
 }
 
 static int davinci_mcasp_set_clkdiv(struct snd_soc_dai *dai, int div_id, int div)
@@ -413,8 +418,17 @@ static int davinci_config_channel_size(struct davinci_mcasp *mcasp,
 {
 	u32 fmt;
 	u32 tx_rotate = (word_length / 4) & 0x7;
-	u32 rx_rotate = (32 - word_length) / 4;
 	u32 mask = (1ULL << word_length) - 1;
+	/*
+	 * For captured data we should not rotate, inversion and masking is
+	 * enoguh to get the data to the right position:
+	 * Format	  data from bus		after reverse (XRBUF)
+	 * S16_LE:	|LSB|MSB|xxx|xxx|	|xxx|xxx|MSB|LSB|
+	 * S24_3LE:	|LSB|DAT|MSB|xxx|	|xxx|MSB|DAT|LSB|
+	 * S24_LE:	|LSB|DAT|MSB|xxx|	|xxx|MSB|DAT|LSB|
+	 * S32_LE:	|LSB|DAT|DAT|MSB|	|MSB|DAT|DAT|LSB|
+	 */
+	u32 rx_rotate = 0;
 
 	/*
 	 * if s BCLK-to-LRCLK ratio has been configured via the set_clkdiv()
@@ -448,7 +462,7 @@ static int davinci_config_channel_size(struct davinci_mcasp *mcasp,
 	return 0;
 }
 
-static int davinci_hw_common_param(struct davinci_mcasp *mcasp, int stream,
+static int mcasp_common_hw_param(struct davinci_mcasp *mcasp, int stream,
 				    int channels)
 {
 	int i;
@@ -524,11 +538,17 @@ static int davinci_hw_common_param(struct davinci_mcasp *mcasp, int stream,
 	return 0;
 }
 
-static void davinci_hw_param(struct davinci_mcasp *mcasp, int stream)
+static int mcasp_i2s_hw_param(struct davinci_mcasp *mcasp, int stream)
 {
 	int i, active_slots;
 	u32 mask = 0;
 	u32 busel = 0;
+
+	if ((mcasp->tdm_slots < 2) || (mcasp->tdm_slots > 32)) {
+		dev_err(mcasp->dev, "tdm slot %d not supported\n",
+			mcasp->tdm_slots);
+		return -EINVAL;
+	}
 
 	active_slots = (mcasp->tdm_slots > 31) ? 32 : mcasp->tdm_slots;
 	for (i = 0; i < active_slots; i++)
@@ -539,35 +559,21 @@ static void davinci_hw_param(struct davinci_mcasp *mcasp, int stream)
 	if (!mcasp->dat_port)
 		busel = TXSEL;
 
-	if (stream == SNDRV_PCM_STREAM_PLAYBACK) {
-		/* bit stream is MSB first  with no delay */
-		/* DSP_B mode */
-		mcasp_set_reg(mcasp, DAVINCI_MCASP_TXTDM_REG, mask);
-		mcasp_set_bits(mcasp, DAVINCI_MCASP_TXFMT_REG, busel | TXORD);
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_TXTDM_REG, mask);
+	mcasp_set_bits(mcasp, DAVINCI_MCASP_TXFMT_REG, busel | TXORD);
+	mcasp_mod_bits(mcasp, DAVINCI_MCASP_TXFMCTL_REG,
+		       FSXMOD(mcasp->tdm_slots), FSXMOD(0x1FF));
 
-		if ((mcasp->tdm_slots >= 2) && (mcasp->tdm_slots <= 32))
-			mcasp_mod_bits(mcasp, DAVINCI_MCASP_TXFMCTL_REG,
-				       FSXMOD(mcasp->tdm_slots), FSXMOD(0x1FF));
-		else
-			printk(KERN_ERR "playback tdm slot %d not supported\n",
-				mcasp->tdm_slots);
-	} else {
-		/* bit stream is MSB first with no delay */
-		/* DSP_B mode */
-		mcasp_set_bits(mcasp, DAVINCI_MCASP_RXFMT_REG, busel | RXORD);
-		mcasp_set_reg(mcasp, DAVINCI_MCASP_RXTDM_REG, mask);
+	mcasp_set_reg(mcasp, DAVINCI_MCASP_RXTDM_REG, mask);
+	mcasp_set_bits(mcasp, DAVINCI_MCASP_RXFMT_REG, busel | RXORD);
+	mcasp_mod_bits(mcasp, DAVINCI_MCASP_RXFMCTL_REG,
+		       FSRMOD(mcasp->tdm_slots), FSRMOD(0x1FF));
 
-		if ((mcasp->tdm_slots >= 2) && (mcasp->tdm_slots <= 32))
-			mcasp_mod_bits(mcasp, DAVINCI_MCASP_RXFMCTL_REG,
-				       FSRMOD(mcasp->tdm_slots), FSRMOD(0x1FF));
-		else
-			printk(KERN_ERR "capture tdm slot %d not supported\n",
-				mcasp->tdm_slots);
-	}
+	return 0;
 }
 
 /* S/PDIF */
-static void davinci_hw_dit_param(struct davinci_mcasp *mcasp)
+static int mcasp_dit_hw_param(struct davinci_mcasp *mcasp)
 {
 	/* Set the TX format : 24 bit right rotation, 32 bit slot, Pad 0
 	   and LSB first */
@@ -589,6 +595,8 @@ static void davinci_hw_dit_param(struct davinci_mcasp *mcasp)
 
 	/* Enable the DIT */
 	mcasp_set_bits(mcasp, DAVINCI_MCASP_TXDITCTL_REG, DITEN);
+
+	return 0;
 }
 
 static int davinci_mcasp_hw_params(struct snd_pcm_substream *substream,
@@ -605,13 +613,14 @@ static int davinci_mcasp_hw_params(struct snd_pcm_substream *substream,
 	u8 slots = mcasp->tdm_slots;
 	u8 active_serializers;
 	int channels;
+	int ret;
 	struct snd_interval *pcm_channels = hw_param_interval(params,
 					SNDRV_PCM_HW_PARAM_CHANNELS);
 	channels = pcm_channels->min;
 
 	active_serializers = (channels + slots - 1) / slots;
 
-	if (davinci_hw_common_param(mcasp, substream->stream, channels) == -EINVAL)
+	if (mcasp_common_hw_param(mcasp, substream->stream, channels) == -EINVAL)
 		return -EINVAL;
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 		fifo_level = mcasp->txnumevt * active_serializers;
@@ -619,9 +628,12 @@ static int davinci_mcasp_hw_params(struct snd_pcm_substream *substream,
 		fifo_level = mcasp->rxnumevt * active_serializers;
 
 	if (mcasp->op_mode == DAVINCI_MCASP_DIT_MODE)
-		davinci_hw_dit_param(mcasp);
+		ret = mcasp_dit_hw_param(mcasp);
 	else
-		davinci_hw_param(mcasp, substream->stream);
+		ret = mcasp_i2s_hw_param(mcasp, substream->stream);
+
+	if (ret)
+		return ret;
 
 	switch (params_format(params)) {
 	case SNDRV_PCM_FORMAT_U8:
@@ -678,19 +690,9 @@ static int davinci_mcasp_trigger(struct snd_pcm_substream *substream,
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		ret = pm_runtime_get_sync(mcasp->dev);
-		if (IS_ERR_VALUE(ret))
-			dev_err(mcasp->dev, "pm_runtime_get_sync() failed\n");
 		davinci_mcasp_start(mcasp, substream->stream);
 		break;
-
 	case SNDRV_PCM_TRIGGER_SUSPEND:
-		davinci_mcasp_stop(mcasp, substream->stream);
-		ret = pm_runtime_put_sync(mcasp->dev);
-		if (IS_ERR_VALUE(ret))
-			dev_err(mcasp->dev, "pm_runtime_put_sync() failed\n");
-		break;
-
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 		davinci_mcasp_stop(mcasp, substream->stream);

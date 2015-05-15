@@ -742,6 +742,10 @@ int r100_irq_set(struct radeon_device *rdev)
 		tmp |= RADEON_FP2_DETECT_MASK;
 	}
 	WREG32(RADEON_GEN_INT_CNTL, tmp);
+
+	/* read back to post the write */
+	RREG32(RADEON_GEN_INT_CNTL);
+
 	return 0;
 }
 
@@ -3219,6 +3223,9 @@ void r100_bandwidth_update(struct radeon_device *rdev)
 	uint32_t pixel_bytes1 = 0;
 	uint32_t pixel_bytes2 = 0;
 
+	if (!rdev->mode_info.mode_config_initialized)
+		return;
+
 	radeon_update_display_priority(rdev);
 
 	if (rdev->mode_info.crtcs[0]->base.enabled) {
@@ -3941,8 +3948,6 @@ int r100_resume(struct radeon_device *rdev)
 	r100_clock_startup(rdev);
 	/* Initialize surface registers */
 	radeon_surface_init(rdev);
-
-	radeon_pm_resume(rdev);
 
 	rdev->accel_working = true;
 	r = r100_startup(rdev);

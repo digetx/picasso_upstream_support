@@ -807,7 +807,7 @@ qlcnic_dcb_get_pg_tc_cfg_tx(struct net_device *netdev, int tc, u8 *prio,
 	    !type->tc_param_valid)
 		return;
 
-	if (tc < 0 || (tc > QLC_DCB_MAX_TC))
+	if (tc < 0 || (tc >= QLC_DCB_MAX_TC))
 		return;
 
 	tc_cfg = &type->tc_cfg[tc];
@@ -843,7 +843,7 @@ static void qlcnic_dcb_get_pg_bwg_cfg_tx(struct net_device *netdev, int pgid,
 	    !type->tc_param_valid)
 		return;
 
-	if (pgid < 0 || pgid > QLC_DCB_MAX_PG)
+	if (pgid < 0 || pgid >= QLC_DCB_MAX_PG)
 		return;
 
 	pgcfg = &type->pg_cfg[pgid];
@@ -1022,6 +1022,7 @@ static int qlcnic_dcb_peer_app_info(struct net_device *netdev,
 	struct qlcnic_dcb_cee *peer;
 	int i;
 
+	memset(info, 0, sizeof(*info));
 	*app_count = 0;
 
 	if (!test_bit(QLCNIC_DCB_STATE, &adapter->dcb->state))

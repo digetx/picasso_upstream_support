@@ -414,7 +414,7 @@ static void free_msi_irqs(struct pci_dev *dev)
 	if (dev->msi_irq_groups) {
 		sysfs_remove_groups(&dev->dev.kobj, dev->msi_irq_groups);
 		msi_attrs = dev->msi_irq_groups[0]->attrs;
-		list_for_each_entry(entry, &dev->msi_list, list) {
+		while (msi_attrs[count]) {
 			dev_attr = container_of(msi_attrs[count],
 						struct device_attribute, attr);
 			kfree(dev_attr->attr.name);
@@ -545,9 +545,15 @@ static int populate_msi_sysfs(struct pci_dev *pdev)
 		return -ENOMEM;
 	list_for_each_entry(entry, &pdev->msi_list, list) {
 		char *name = kmalloc(20, GFP_KERNEL);
-		msi_dev_attr = kzalloc(sizeof(*msi_dev_attr), GFP_KERNEL);
-		if (!msi_dev_attr)
+		if (!name)
 			goto error_attrs;
+
+		msi_dev_attr = kzalloc(sizeof(*msi_dev_attr), GFP_KERNEL);
+		if (!msi_dev_attr) {
+			kfree(name);
+			goto error_attrs;
+		}
+
 		sprintf(name, "%d", entry->irq);
 		sysfs_attr_init(&msi_dev_attr->attr);
 		msi_dev_attr->attr.name = name;
@@ -589,7 +595,22 @@ error_attrs:
 		++count;
 		msi_attr = msi_attrs[count];
 	}
+	kfree(msi_attrs);
 	return ret;
+}
+
+static int msi_verify_entries(struct pci_dev *dev)
+{
+	struct msi_desc *entry;
+
+	list_for_each_entry(entry, &dev->msi_list, list) {
+		if (!dev->no_64bit_msi || !entry->msg.address_hi)
+			continue;
+		dev_err(&dev->dev, "Device has broken 64-bit MSI but arch"
+			" tried to assign one above 4G\n");
+		return -EIO;
+	}
+	return 0;
 }
 
 /**
@@ -639,6 +660,13 @@ static int msi_capability_init(struct pci_dev *dev, int nvec)
 
 	/* Configure MSI capability structure */
 	ret = arch_setup_msi_irqs(dev, nvec, PCI_CAP_ID_MSI);
+	if (ret) {
+		msi_mask_irq(entry, mask, ~mask);
+		free_msi_irqs(dev);
+		return ret;
+	}
+
+	ret = msi_verify_entries(dev);
 	if (ret) {
 		msi_mask_irq(entry, mask, ~mask);
 		free_msi_irqs(dev);
@@ -759,6 +787,11 @@ static int msix_capability_init(struct pci_dev *dev,
 	ret = arch_setup_msi_irqs(dev, nvec, PCI_CAP_ID_MSIX);
 	if (ret)
 		goto out_avail;
+
+	/* Check if all MSI entries honor device restrictions */
+	ret = msi_verify_entries(dev);
+	if (ret)
+		goto out_free;
 
 	/*
 	 * Some devices require MSI-X to be enabled before we can touch the
@@ -959,7 +992,6 @@ EXPORT_SYMBOL(pci_disable_msi);
 /**
  * pci_msix_vec_count - return the number of device's MSI-X table entries
  * @dev: pointer to the pci_dev data structure of MSI-X device function
-
  * This function returns the number of device's MSI-X table entries and
  * therefore the number of MSI-X vectors device is capable of sending.
  * It returns a negative errno if the device is not capable of sending MSI-X

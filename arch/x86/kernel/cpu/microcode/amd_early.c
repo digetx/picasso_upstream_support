@@ -108,12 +108,13 @@ static size_t compute_container_size(u8 *data, u32 total_size)
  * load_microcode_amd() to save equivalent cpu table and microcode patches in
  * kernel heap memory.
  */
-static void apply_ucode_in_initrd(void *ucode, size_t size)
+static void apply_ucode_in_initrd(void *ucode, size_t size, bool save_patch)
 {
 	struct equiv_cpu_entry *eq;
 	size_t *cont_sz;
 	u32 *header;
 	u8  *data, **cont;
+	u8 (*patch)[PATCH_MAX_SIZE];
 	u16 eq_id = 0;
 	int offset, left;
 	u32 rev, eax, ebx, ecx, edx;
@@ -123,10 +124,12 @@ static void apply_ucode_in_initrd(void *ucode, size_t size)
 	new_rev = (u32 *)__pa_nodebug(&ucode_new_rev);
 	cont_sz = (size_t *)__pa_nodebug(&container_size);
 	cont	= (u8 **)__pa_nodebug(&container);
+	patch	= (u8 (*)[PATCH_MAX_SIZE])__pa_nodebug(&amd_ucode_patch);
 #else
 	new_rev = &ucode_new_rev;
 	cont_sz = &container_size;
 	cont	= &container;
+	patch	= &amd_ucode_patch;
 #endif
 
 	data   = ucode;
@@ -213,9 +216,9 @@ static void apply_ucode_in_initrd(void *ucode, size_t size)
 				rev = mc->hdr.patch_id;
 				*new_rev = rev;
 
-				/* save ucode patch */
-				memcpy(amd_ucode_patch, mc,
-				       min_t(u32, header[1], PATCH_MAX_SIZE));
+				if (save_patch)
+					memcpy(patch, mc,
+					       min_t(u32, header[1], PATCH_MAX_SIZE));
 			}
 		}
 
@@ -246,7 +249,7 @@ void __init load_ucode_amd_bsp(void)
 	*data = cp.data;
 	*size = cp.size;
 
-	apply_ucode_in_initrd(cp.data, cp.size);
+	apply_ucode_in_initrd(cp.data, cp.size, true);
 }
 
 #ifdef CONFIG_X86_32
@@ -263,7 +266,7 @@ void load_ucode_amd_ap(void)
 	size_t *usize;
 	void **ucode;
 
-	mc = (struct microcode_amd *)__pa(amd_ucode_patch);
+	mc = (struct microcode_amd *)__pa_nodebug(amd_ucode_patch);
 	if (mc->hdr.patch_id && mc->hdr.processor_rev_id) {
 		__apply_microcode_amd(mc);
 		return;
@@ -275,7 +278,7 @@ void load_ucode_amd_ap(void)
 	if (!*ucode || !*usize)
 		return;
 
-	apply_ucode_in_initrd(*ucode, *usize);
+	apply_ucode_in_initrd(*ucode, *usize, false);
 }
 
 static void __init collect_cpu_sig_on_bsp(void *arg)
@@ -284,6 +287,15 @@ static void __init collect_cpu_sig_on_bsp(void *arg)
 	struct ucode_cpu_info *uci = ucode_cpu_info + cpu;
 
 	uci->cpu_sig.sig = cpuid_eax(0x00000001);
+}
+
+static void __init get_bsp_sig(void)
+{
+	unsigned int bsp = boot_cpu_data.cpu_index;
+	struct ucode_cpu_info *uci = ucode_cpu_info + bsp;
+
+	if (!uci->cpu_sig.sig)
+		smp_call_function_single(bsp, collect_cpu_sig_on_bsp, NULL, 1);
 }
 #else
 void load_ucode_amd_ap(void)
@@ -330,44 +342,56 @@ void load_ucode_amd_ap(void)
 		 * AP has a different equivalence ID than BSP, looks like
 		 * mixed-steppings silicon so go through the ucode blob anew.
 		 */
-		apply_ucode_in_initrd(ucode_cpio.data, ucode_cpio.size);
+		apply_ucode_in_initrd(ucode_cpio.data, ucode_cpio.size, false);
 	}
 }
 #endif
 
 int __init save_microcode_in_initrd_amd(void)
 {
+	unsigned long cont;
+	int retval = 0;
 	enum ucode_state ret;
+	u8 *cont_va;
 	u32 eax;
-
-#ifdef CONFIG_X86_32
-	unsigned int bsp = boot_cpu_data.cpu_index;
-	struct ucode_cpu_info *uci = ucode_cpu_info + bsp;
-
-	if (!uci->cpu_sig.sig)
-		smp_call_function_single(bsp, collect_cpu_sig_on_bsp, NULL, 1);
-
-	/*
-	 * Take into account the fact that the ramdisk might get relocated
-	 * and therefore we need to recompute the container's position in
-	 * virtual memory space.
-	 */
-	container = (u8 *)(__va((u32)relocated_ramdisk) +
-			   ((u32)container - boot_params.hdr.ramdisk_image));
-#endif
-	if (ucode_new_rev)
-		pr_info("microcode: updated early to new patch_level=0x%08x\n",
-			ucode_new_rev);
 
 	if (!container)
 		return -EINVAL;
+
+#ifdef CONFIG_X86_32
+	get_bsp_sig();
+	cont	= (unsigned long)container;
+	cont_va = __va(container);
+#else
+	/*
+	 * We need the physical address of the container for both bitness since
+	 * boot_params.hdr.ramdisk_image is a physical address.
+	 */
+	cont    = __pa(container);
+	cont_va = container;
+#endif
+
+	/*
+	 * Take into account the fact that the ramdisk might get relocated and
+	 * therefore we need to recompute the container's position in virtual
+	 * memory space.
+	 */
+	if (relocated_ramdisk)
+		container = (u8 *)(__va(relocated_ramdisk) +
+			     (cont - boot_params.hdr.ramdisk_image));
+	else
+		container = cont_va;
+
+	if (ucode_new_rev)
+		pr_info("microcode: updated early to new patch_level=0x%08x\n",
+			ucode_new_rev);
 
 	eax   = cpuid_eax(0x00000001);
 	eax   = ((eax >> 8) & 0xf) + ((eax >> 20) & 0xff);
 
 	ret = load_microcode_amd(eax, container, container_size);
 	if (ret != UCODE_OK)
-		return -EINVAL;
+		retval = -EINVAL;
 
 	/*
 	 * This will be freed any msec now, stash patches for the current
@@ -376,5 +400,5 @@ int __init save_microcode_in_initrd_amd(void)
 	container = NULL;
 	container_size = 0;
 
-	return 0;
+	return retval;
 }

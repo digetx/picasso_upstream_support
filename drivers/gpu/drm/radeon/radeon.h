@@ -135,6 +135,9 @@ extern int radeon_hard_reset;
 /* R600+ */
 #define R600_RING_TYPE_UVD_INDEX	5
 
+/* number of hw syncs before falling back on blocking */
+#define RADEON_NUM_SYNCS			4
+
 /* hardcode those limit for now */
 #define RADEON_VA_IB_OFFSET			(1 << 20)
 #define RADEON_VA_RESERVED_SIZE			(8 << 20)
@@ -291,6 +294,9 @@ int radeon_atom_get_leakage_vddc_based_on_leakage_params(struct radeon_device *r
 							 u16 *vddc, u16 *vddci,
 							 u16 virtual_voltage_id,
 							 u16 vbios_voltage_id);
+int radeon_atom_get_voltage_evv(struct radeon_device *rdev,
+				u16 virtual_voltage_id,
+				u16 *voltage);
 int radeon_atom_round_to_true_voltage(struct radeon_device *rdev,
 				      u8 voltage_type,
 				      u16 nominal_voltage,
@@ -554,7 +560,6 @@ int radeon_mode_dumb_mmap(struct drm_file *filp,
 /*
  * Semaphores.
  */
-/* everything here is constant */
 struct radeon_semaphore {
 	struct radeon_sa_bo		*sa_bo;
 	signed				waiters;
@@ -731,6 +736,12 @@ struct cik_irq_stat_regs {
 	u32 disp_int_cont4;
 	u32 disp_int_cont5;
 	u32 disp_int_cont6;
+	u32 d1grph_int;
+	u32 d2grph_int;
+	u32 d3grph_int;
+	u32 d4grph_int;
+	u32 d5grph_int;
+	u32 d6grph_int;
 };
 
 union radeon_irq_stat_regs {
@@ -740,7 +751,7 @@ union radeon_irq_stat_regs {
 	struct cik_irq_stat_regs cik;
 };
 
-#define RADEON_MAX_HPD_PINS 6
+#define RADEON_MAX_HPD_PINS 7
 #define RADEON_MAX_CRTCS 6
 #define RADEON_MAX_AFMT_BLOCKS 7
 
@@ -2240,6 +2251,7 @@ struct radeon_device {
 	bool have_disp_power_ref;
 };
 
+bool radeon_is_px(struct drm_device *dev);
 int radeon_device_init(struct radeon_device *rdev,
 		       struct drm_device *ddev,
 		       struct pci_dev *pdev,
@@ -2550,6 +2562,9 @@ void r100_pll_errata_after_index(struct radeon_device *rdev);
 #define ASIC_IS_DCE64(rdev) ((rdev->family == CHIP_OLAND))
 #define ASIC_IS_NODCE(rdev) ((rdev->family == CHIP_HAINAN))
 #define ASIC_IS_DCE8(rdev) ((rdev->family >= CHIP_BONAIRE))
+#define ASIC_IS_DCE81(rdev) ((rdev->family == CHIP_KAVERI))
+#define ASIC_IS_DCE82(rdev) ((rdev->family == CHIP_BONAIRE))
+#define ASIC_IS_DCE83(rdev) ((rdev->family == CHIP_KABINI))
 
 #define ASIC_IS_LOMBOK(rdev) ((rdev->ddev->pdev->device == 0x6849) || \
 			      (rdev->ddev->pdev->device == 0x6850) || \
@@ -2745,6 +2760,12 @@ int radeon_vm_bo_rmv(struct radeon_device *rdev,
 void r600_audio_update_hdmi(struct work_struct *work);
 struct r600_audio_pin *r600_audio_get_pin(struct radeon_device *rdev);
 struct r600_audio_pin *dce6_audio_get_pin(struct radeon_device *rdev);
+void r600_audio_enable(struct radeon_device *rdev,
+		       struct r600_audio_pin *pin,
+		       bool enable);
+void dce6_audio_enable(struct radeon_device *rdev,
+		       struct r600_audio_pin *pin,
+		       bool enable);
 
 /*
  * R600 vram scratch functions

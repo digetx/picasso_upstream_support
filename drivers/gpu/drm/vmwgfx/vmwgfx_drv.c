@@ -667,6 +667,7 @@ static int vmw_driver_load(struct drm_device *dev, unsigned long chipset)
 		dev_priv->memory_size = 512*1024*1024;
 	}
 	dev_priv->max_mob_pages = 0;
+	dev_priv->max_mob_size = 0;
 	if (dev_priv->capabilities & SVGA_CAP_GBOBJECTS) {
 		uint64_t mem_size =
 			vmw_read(dev_priv,
@@ -676,6 +677,8 @@ static int vmw_driver_load(struct drm_device *dev, unsigned long chipset)
 		dev_priv->prim_bb_mem =
 			vmw_read(dev_priv,
 				 SVGA_REG_MAX_PRIMARY_BOUNDING_BOX_MEM);
+		dev_priv->max_mob_size =
+			vmw_read(dev_priv, SVGA_REG_MOB_MAX_SIZE);
 	} else
 		dev_priv->prim_bb_mem = dev_priv->vram_size;
 
@@ -685,7 +688,11 @@ static int vmw_driver_load(struct drm_device *dev, unsigned long chipset)
 		goto out_err0;
 	}
 
-	if (unlikely(dev_priv->prim_bb_mem < dev_priv->vram_size))
+	/*
+	 * Limit back buffer size to VRAM size.  Remove this once
+	 * screen targets are implemented.
+	 */
+	if (dev_priv->prim_bb_mem > dev_priv->vram_size)
 		dev_priv->prim_bb_mem = dev_priv->vram_size;
 
 	mutex_unlock(&dev_priv->hw_mutex);
@@ -724,32 +731,6 @@ static int vmw_driver_load(struct drm_device *dev, unsigned long chipset)
 	if (unlikely(ret != 0)) {
 		DRM_ERROR("Failed initializing TTM buffer object driver.\n");
 		goto out_err1;
-	}
-
-	ret = ttm_bo_init_mm(&dev_priv->bdev, TTM_PL_VRAM,
-			     (dev_priv->vram_size >> PAGE_SHIFT));
-	if (unlikely(ret != 0)) {
-		DRM_ERROR("Failed initializing memory manager for VRAM.\n");
-		goto out_err2;
-	}
-
-	dev_priv->has_gmr = true;
-	if (((dev_priv->capabilities & (SVGA_CAP_GMR | SVGA_CAP_GMR2)) == 0) ||
-	    refuse_dma || ttm_bo_init_mm(&dev_priv->bdev, VMW_PL_GMR,
-					 VMW_PL_GMR) != 0) {
-		DRM_INFO("No GMR memory available. "
-			 "Graphics memory resources are very limited.\n");
-		dev_priv->has_gmr = false;
-	}
-
-	if (dev_priv->capabilities & SVGA_CAP_GBOBJECTS) {
-		dev_priv->has_mob = true;
-		if (ttm_bo_init_mm(&dev_priv->bdev, VMW_PL_MOB,
-				   VMW_PL_MOB) != 0) {
-			DRM_INFO("No MOB memory available. "
-				 "3D will be disabled.\n");
-			dev_priv->has_mob = false;
-		}
 	}
 
 	dev_priv->mmio_mtrr = arch_phys_wc_add(dev_priv->mmio_start,
@@ -814,6 +795,33 @@ static int vmw_driver_load(struct drm_device *dev, unsigned long chipset)
 		goto out_no_fman;
 	}
 
+
+	ret = ttm_bo_init_mm(&dev_priv->bdev, TTM_PL_VRAM,
+			     (dev_priv->vram_size >> PAGE_SHIFT));
+	if (unlikely(ret != 0)) {
+		DRM_ERROR("Failed initializing memory manager for VRAM.\n");
+		goto out_no_vram;
+	}
+
+	dev_priv->has_gmr = true;
+	if (((dev_priv->capabilities & (SVGA_CAP_GMR | SVGA_CAP_GMR2)) == 0) ||
+	    refuse_dma || ttm_bo_init_mm(&dev_priv->bdev, VMW_PL_GMR,
+					 VMW_PL_GMR) != 0) {
+		DRM_INFO("No GMR memory available. "
+			 "Graphics memory resources are very limited.\n");
+		dev_priv->has_gmr = false;
+	}
+
+	if (dev_priv->capabilities & SVGA_CAP_GBOBJECTS) {
+		dev_priv->has_mob = true;
+		if (ttm_bo_init_mm(&dev_priv->bdev, VMW_PL_MOB,
+				   VMW_PL_MOB) != 0) {
+			DRM_INFO("No MOB memory available. "
+				 "3D will be disabled.\n");
+			dev_priv->has_mob = false;
+		}
+	}
+
 	vmw_kms_save_vga(dev_priv);
 
 	/* Start kms and overlay systems, needs fifo. */
@@ -839,6 +847,12 @@ out_no_fifo:
 	vmw_kms_close(dev_priv);
 out_no_kms:
 	vmw_kms_restore_vga(dev_priv);
+	if (dev_priv->has_mob)
+		(void) ttm_bo_clean_mm(&dev_priv->bdev, VMW_PL_MOB);
+	if (dev_priv->has_gmr)
+		(void) ttm_bo_clean_mm(&dev_priv->bdev, VMW_PL_GMR);
+	(void)ttm_bo_clean_mm(&dev_priv->bdev, TTM_PL_VRAM);
+out_no_vram:
 	vmw_fence_manager_takedown(dev_priv->fman);
 out_no_fman:
 	if (dev_priv->capabilities & SVGA_CAP_IRQMASK)
@@ -854,12 +868,6 @@ out_err4:
 	iounmap(dev_priv->mmio_virt);
 out_err3:
 	arch_phys_wc_del(dev_priv->mmio_mtrr);
-	if (dev_priv->has_mob)
-		(void) ttm_bo_clean_mm(&dev_priv->bdev, VMW_PL_MOB);
-	if (dev_priv->has_gmr)
-		(void) ttm_bo_clean_mm(&dev_priv->bdev, VMW_PL_GMR);
-	(void)ttm_bo_clean_mm(&dev_priv->bdev, TTM_PL_VRAM);
-out_err2:
 	(void)ttm_bo_device_release(&dev_priv->bdev);
 out_err1:
 	vmw_ttm_global_release(dev_priv);
@@ -889,6 +897,13 @@ static int vmw_driver_unload(struct drm_device *dev)
 	}
 	vmw_kms_close(dev_priv);
 	vmw_overlay_close(dev_priv);
+
+	if (dev_priv->has_mob)
+		(void) ttm_bo_clean_mm(&dev_priv->bdev, VMW_PL_MOB);
+	if (dev_priv->has_gmr)
+		(void)ttm_bo_clean_mm(&dev_priv->bdev, VMW_PL_GMR);
+	(void)ttm_bo_clean_mm(&dev_priv->bdev, TTM_PL_VRAM);
+
 	vmw_fence_manager_takedown(dev_priv->fman);
 	if (dev_priv->capabilities & SVGA_CAP_IRQMASK)
 		drm_irq_uninstall(dev_priv->dev);
@@ -900,11 +915,6 @@ static int vmw_driver_unload(struct drm_device *dev)
 	ttm_object_device_release(&dev_priv->tdev);
 	iounmap(dev_priv->mmio_virt);
 	arch_phys_wc_del(dev_priv->mmio_mtrr);
-	if (dev_priv->has_mob)
-		(void) ttm_bo_clean_mm(&dev_priv->bdev, VMW_PL_MOB);
-	if (dev_priv->has_gmr)
-		(void)ttm_bo_clean_mm(&dev_priv->bdev, VMW_PL_GMR);
-	(void)ttm_bo_clean_mm(&dev_priv->bdev, TTM_PL_VRAM);
 	(void)ttm_bo_device_release(&dev_priv->bdev);
 	vmw_ttm_global_release(dev_priv);
 
@@ -941,6 +951,7 @@ static void vmw_postclose(struct drm_device *dev,
 		drm_master_put(&vmw_fp->locked_master);
 	}
 
+	vmw_compat_shader_man_destroy(vmw_fp->shman);
 	ttm_object_file_release(&vmw_fp->tfile);
 	kfree(vmw_fp);
 }
@@ -960,11 +971,17 @@ static int vmw_driver_open(struct drm_device *dev, struct drm_file *file_priv)
 	if (unlikely(vmw_fp->tfile == NULL))
 		goto out_no_tfile;
 
+	vmw_fp->shman = vmw_compat_shader_man_create(dev_priv);
+	if (IS_ERR(vmw_fp->shman))
+		goto out_no_shman;
+
 	file_priv->driver_priv = vmw_fp;
 	dev_priv->bdev.dev_mapping = dev->dev_mapping;
 
 	return 0;
 
+out_no_shman:
+	ttm_object_file_release(&vmw_fp->tfile);
 out_no_tfile:
 	kfree(vmw_fp);
 	return ret;

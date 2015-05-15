@@ -142,6 +142,7 @@ struct ports_device {
 	 * notification
 	 */
 	struct work_struct control_work;
+	struct work_struct config_work;
 
 	struct list_head ports;
 
@@ -890,12 +891,10 @@ static int pipe_to_sg(struct pipe_inode_info *pipe, struct pipe_buffer *buf,
 	} else {
 		/* Failback to copying a page */
 		struct page *page = alloc_page(GFP_KERNEL);
-		char *src = buf->ops->map(pipe, buf, 1);
-		char *dst;
+		char *src;
 
 		if (!page)
 			return -ENOMEM;
-		dst = kmap(page);
 
 		offset = sd->pos & ~PAGE_MASK;
 
@@ -903,9 +902,8 @@ static int pipe_to_sg(struct pipe_inode_info *pipe, struct pipe_buffer *buf,
 		if (len + offset > PAGE_SIZE)
 			len = PAGE_SIZE - offset;
 
-		memcpy(dst + offset, src + buf->offset, len);
-
-		kunmap(page);
+		src = buf->ops->map(pipe, buf, 1);
+		memcpy(page_address(page) + offset, src + buf->offset, len);
 		buf->ops->unmap(pipe, buf, src);
 
 		sg_set_page(&(sgl->sg[sgl->n]), page, len, offset);
@@ -1835,10 +1833,21 @@ static void config_intr(struct virtio_device *vdev)
 
 	portdev = vdev->priv;
 
+	if (!use_multiport(portdev))
+		schedule_work(&portdev->config_work);
+}
+
+static void config_work_handler(struct work_struct *work)
+{
+	struct ports_device *portdev;
+
+	portdev = container_of(work, struct ports_device, control_work);
 	if (!use_multiport(portdev)) {
+		struct virtio_device *vdev;
 		struct port *port;
 		u16 rows, cols;
 
+		vdev = portdev->vdev;
 		virtio_cread(vdev, struct virtio_console_config, cols, &cols);
 		virtio_cread(vdev, struct virtio_console_config, rows, &rows);
 
@@ -2027,12 +2036,14 @@ static int virtcons_probe(struct virtio_device *vdev)
 	spin_lock_init(&portdev->ports_lock);
 	INIT_LIST_HEAD(&portdev->ports);
 
+	INIT_WORK(&portdev->config_work, &config_work_handler);
+	INIT_WORK(&portdev->control_work, &control_work_handler);
+
 	if (multiport) {
 		unsigned int nr_added_bufs;
 
 		spin_lock_init(&portdev->c_ivq_lock);
 		spin_lock_init(&portdev->c_ovq_lock);
-		INIT_WORK(&portdev->control_work, &control_work_handler);
 
 		nr_added_bufs = fill_queue(portdev->c_ivq,
 					   &portdev->c_ivq_lock);
@@ -2100,6 +2111,8 @@ static void virtcons_remove(struct virtio_device *vdev)
 	/* Finish up work that's lined up */
 	if (use_multiport(portdev))
 		cancel_work_sync(&portdev->control_work);
+	else
+		cancel_work_sync(&portdev->config_work);
 
 	list_for_each_entry_safe(port, port2, &portdev->ports, list)
 		unplug_port(port);
@@ -2151,6 +2164,7 @@ static int virtcons_freeze(struct virtio_device *vdev)
 
 	virtqueue_disable_cb(portdev->c_ivq);
 	cancel_work_sync(&portdev->control_work);
+	cancel_work_sync(&portdev->config_work);
 	/*
 	 * Once more: if control_work_handler() was running, it would
 	 * enable the cb as the last step.

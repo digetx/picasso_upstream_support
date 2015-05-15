@@ -653,12 +653,45 @@ static int get_amp_val_to_activate(struct hda_codec *codec, hda_nid_t nid,
 	return val;
 }
 
+/* is this a stereo widget or a stereo-to-mono mix? */
+static bool is_stereo_amps(struct hda_codec *codec, hda_nid_t nid, int dir)
+{
+	unsigned int wcaps = get_wcaps(codec, nid);
+	hda_nid_t conn;
+
+	if (wcaps & AC_WCAP_STEREO)
+		return true;
+	if (dir != HDA_INPUT || get_wcaps_type(wcaps) != AC_WID_AUD_MIX)
+		return false;
+	if (snd_hda_get_num_conns(codec, nid) != 1)
+		return false;
+	if (snd_hda_get_connections(codec, nid, &conn, 1) < 0)
+		return false;
+	return !!(get_wcaps(codec, conn) & AC_WCAP_STEREO);
+}
+
 /* initialize the amp value (only at the first time) */
 static void init_amp(struct hda_codec *codec, hda_nid_t nid, int dir, int idx)
 {
 	unsigned int caps = query_amp_caps(codec, nid, dir);
 	int val = get_amp_val_to_activate(codec, nid, dir, caps, false);
-	snd_hda_codec_amp_init_stereo(codec, nid, dir, idx, 0xff, val);
+
+	if (is_stereo_amps(codec, nid, dir))
+		snd_hda_codec_amp_init_stereo(codec, nid, dir, idx, 0xff, val);
+	else
+		snd_hda_codec_amp_init(codec, nid, 0, dir, idx, 0xff, val);
+}
+
+/* update the amp, doing in stereo or mono depending on NID */
+static int update_amp(struct hda_codec *codec, hda_nid_t nid, int dir, int idx,
+		      unsigned int mask, unsigned int val)
+{
+	if (is_stereo_amps(codec, nid, dir))
+		return snd_hda_codec_amp_stereo(codec, nid, dir, idx,
+						mask, val);
+	else
+		return snd_hda_codec_amp_update(codec, nid, 0, dir, idx,
+						mask, val);
 }
 
 /* calculate amp value mask we can modify;
@@ -698,7 +731,7 @@ static void activate_amp(struct hda_codec *codec, hda_nid_t nid, int dir,
 		return;
 
 	val &= mask;
-	snd_hda_codec_amp_stereo(codec, nid, dir, idx, mask, val);
+	update_amp(codec, nid, dir, idx, mask, val);
 }
 
 static void activate_amp_out(struct hda_codec *codec, struct nid_path *path,
@@ -3269,7 +3302,7 @@ static int cap_put_caller(struct snd_kcontrol *kcontrol,
 	mutex_unlock(&codec->control_mutex);
 	snd_hda_codec_flush_cache(codec); /* flush the updates */
 	if (err >= 0 && spec->cap_sync_hook)
-		spec->cap_sync_hook(codec, ucontrol);
+		spec->cap_sync_hook(codec, kcontrol, ucontrol);
 	return err;
 }
 
@@ -3390,7 +3423,7 @@ static int cap_single_sw_put(struct snd_kcontrol *kcontrol,
 		return ret;
 
 	if (spec->cap_sync_hook)
-		spec->cap_sync_hook(codec, ucontrol);
+		spec->cap_sync_hook(codec, kcontrol, ucontrol);
 
 	return ret;
 }
@@ -3795,7 +3828,7 @@ static int mux_select(struct hda_codec *codec, unsigned int adc_idx,
 		return 0;
 	snd_hda_activate_path(codec, path, true, false);
 	if (spec->cap_sync_hook)
-		spec->cap_sync_hook(codec, NULL);
+		spec->cap_sync_hook(codec, NULL, NULL);
 	path_power_down_sync(codec, old_path);
 	return 1;
 }
@@ -4337,13 +4370,11 @@ static void mute_all_mixer_nid(struct hda_codec *codec, hda_nid_t mix)
 	has_amp = nid_has_mute(codec, mix, HDA_INPUT);
 	for (i = 0; i < nums; i++) {
 		if (has_amp)
-			snd_hda_codec_amp_stereo(codec, mix,
-						 HDA_INPUT, i,
-						 0xff, HDA_AMP_MUTE);
+			update_amp(codec, mix, HDA_INPUT, i,
+				   0xff, HDA_AMP_MUTE);
 		else if (nid_has_volume(codec, conn[i], HDA_OUTPUT))
-			snd_hda_codec_amp_stereo(codec, conn[i],
-						 HDA_OUTPUT, 0,
-						 0xff, HDA_AMP_MUTE);
+			update_amp(codec, conn[i], HDA_OUTPUT, 0,
+				   0xff, HDA_AMP_MUTE);
 	}
 }
 
@@ -5270,7 +5301,7 @@ static void init_input_src(struct hda_codec *codec)
 	}
 
 	if (spec->cap_sync_hook)
-		spec->cap_sync_hook(codec, NULL);
+		spec->cap_sync_hook(codec, NULL, NULL);
 }
 
 /* set right pin controls for digital I/O */

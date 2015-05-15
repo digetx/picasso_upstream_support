@@ -62,6 +62,15 @@ static int xenvif_poll(struct napi_struct *napi, int budget)
 	struct xenvif *vif = container_of(napi, struct xenvif, napi);
 	int work_done;
 
+	/* This vif is rogue, we pretend we've there is nothing to do
+	 * for this vif to deschedule it from NAPI. But this interface
+	 * will be turned off in thread context later.
+	 */
+	if (unlikely(vif->disabled)) {
+		napi_complete(napi);
+		return 0;
+	}
+
 	work_done = xenvif_tx_action(vif, budget);
 
 	if (work_done < budget) {
@@ -100,7 +109,6 @@ static irqreturn_t xenvif_rx_interrupt(int irq, void *dev_id)
 {
 	struct xenvif *vif = dev_id;
 
-	vif->rx_event = true;
 	xenvif_kick_thread(vif);
 
 	return IRQ_HANDLED;
@@ -133,8 +141,7 @@ static int xenvif_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	/* If the skb is GSO then we'll also need an extra slot for the
 	 * metadata.
 	 */
-	if (skb_shinfo(skb)->gso_type & SKB_GSO_TCPV4 ||
-	    skb_shinfo(skb)->gso_type & SKB_GSO_TCPV6)
+	if (skb_is_gso(skb))
 		min_slots_needed++;
 
 	/* If the skb can't possibly fit in the remaining slots
@@ -322,6 +329,8 @@ struct xenvif *xenvif_alloc(struct device *parent, domid_t domid,
 	vif->can_sg = 1;
 	vif->ip_csum = 1;
 	vif->dev = dev;
+
+	vif->disabled = false;
 
 	vif->credit_bytes = vif->remaining_credit = ~0UL;
 	vif->credit_usec  = 0UL;

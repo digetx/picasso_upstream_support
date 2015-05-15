@@ -52,6 +52,7 @@
 #include <asm/tlbflush.h>
 #include <asm/x86_init.h>
 #include <asm/rtc.h>
+#include <asm/uv/uv.h>
 
 #define EFI_DEBUG
 
@@ -792,7 +793,7 @@ void __init efi_set_executable(efi_memory_desc_t *md, bool executable)
 		set_memory_nx(addr, npages);
 }
 
-static void __init runtime_code_page_mkexec(void)
+void __init runtime_code_page_mkexec(void)
 {
 	efi_memory_desc_t *md;
 	void *p;
@@ -938,14 +939,36 @@ static void __init efi_map_regions_fixed(void)
 
 }
 
-/*
- * Map efi memory ranges for runtime serivce and update new_memmap with virtual
- * addresses.
- */
-static void * __init efi_map_regions(int *count)
+static void *realloc_pages(void *old_memmap, int old_shift)
 {
+	void *ret;
+
+	ret = (void *)__get_free_pages(GFP_KERNEL, old_shift + 1);
+	if (!ret)
+		goto out;
+
+	/*
+	 * A first-time allocation doesn't have anything to copy.
+	 */
+	if (!old_memmap)
+		return ret;
+
+	memcpy(ret, old_memmap, PAGE_SIZE << old_shift);
+
+out:
+	free_pages((unsigned long)old_memmap, old_shift);
+	return ret;
+}
+
+/*
+ * Map the efi memory ranges of the runtime services and update new_mmap with
+ * virtual addresses.
+ */
+static void * __init efi_map_regions(int *count, int *pg_shift)
+{
+	void *p, *new_memmap = NULL;
+	unsigned long left = 0;
 	efi_memory_desc_t *md;
-	void *p, *tmp, *new_memmap = NULL;
 
 	for (p = memmap.map; p < memmap.map_end; p += memmap.desc_size) {
 		md = p;
@@ -960,20 +983,23 @@ static void * __init efi_map_regions(int *count)
 		efi_map_region(md);
 		get_systab_virt_addr(md);
 
-		tmp = krealloc(new_memmap, (*count + 1) * memmap.desc_size,
-			       GFP_KERNEL);
-		if (!tmp)
-			goto out;
-		new_memmap = tmp;
+		if (left < memmap.desc_size) {
+			new_memmap = realloc_pages(new_memmap, *pg_shift);
+			if (!new_memmap)
+				return NULL;
+
+			left += PAGE_SIZE << *pg_shift;
+			(*pg_shift)++;
+		}
+
 		memcpy(new_memmap + (*count * memmap.desc_size), md,
 		       memmap.desc_size);
+
+		left -= memmap.desc_size;
 		(*count)++;
 	}
 
 	return new_memmap;
-out:
-	kfree(new_memmap);
-	return NULL;
 }
 
 /*
@@ -999,9 +1025,9 @@ out:
  */
 void __init efi_enter_virtual_mode(void)
 {
-	efi_status_t status;
+	int err, count = 0, pg_shift = 0;
 	void *new_memmap = NULL;
-	int err, count = 0;
+	efi_status_t status;
 
 	efi.systab = NULL;
 
@@ -1018,20 +1044,24 @@ void __init efi_enter_virtual_mode(void)
 		efi_map_regions_fixed();
 	} else {
 		efi_merge_regions();
-		new_memmap = efi_map_regions(&count);
+		new_memmap = efi_map_regions(&count, &pg_shift);
 		if (!new_memmap) {
 			pr_err("Error reallocating memory, EFI runtime non-functional!\n");
 			return;
 		}
-	}
 
-	err = save_runtime_map();
-	if (err)
-		pr_err("Error saving runtime map, efi runtime on kexec non-functional!!\n");
+		err = save_runtime_map();
+		if (err)
+			pr_err("Error saving runtime map, efi runtime on kexec non-functional!!\n");
+	}
 
 	BUG_ON(!efi.systab);
 
-	efi_setup_page_tables();
+	if (!efi_setup) {
+		if (efi_setup_page_tables(__pa(new_memmap), 1 << pg_shift))
+			return;
+	}
+
 	efi_sync_low_kernel_mappings();
 
 	if (!efi_setup) {
@@ -1069,10 +1099,37 @@ void __init efi_enter_virtual_mode(void)
 	efi.update_capsule = virt_efi_update_capsule;
 	efi.query_capsule_caps = virt_efi_query_capsule_caps;
 
-	if (efi_enabled(EFI_OLD_MEMMAP) && (__supported_pte_mask & _PAGE_NX))
-		runtime_code_page_mkexec();
+	efi_runtime_mkexec();
 
-	kfree(new_memmap);
+
+	/*
+	 * We mapped the descriptor array into the EFI pagetable above but we're
+	 * not unmapping it here. Here's why:
+	 *
+	 * We're copying select PGDs from the kernel page table to the EFI page
+	 * table and when we do so and make changes to those PGDs like unmapping
+	 * stuff from them, those changes appear in the kernel page table and we
+	 * go boom.
+	 *
+	 * From setup_real_mode():
+	 *
+	 * ...
+	 * trampoline_pgd[0] = init_level4_pgt[pgd_index(__PAGE_OFFSET)].pgd;
+	 *
+	 * In this particular case, our allocation is in PGD 0 of the EFI page
+	 * table but we've copied that PGD from PGD[272] of the EFI page table:
+	 *
+	 *	pgd_index(__PAGE_OFFSET = 0xffff880000000000) = 272
+	 *
+	 * where the direct memory mapping in kernel space is.
+	 *
+	 * new_memmap's VA comes from that direct mapping and thus clearing it,
+	 * it would get cleared in the kernel page table too.
+	 *
+	 * efi_cleanup_page_tables(__pa(new_memmap), 1 << pg_shift);
+	 */
+	if (!efi_setup)
+		free_pages((unsigned long)new_memmap, pg_shift);
 
 	/* clean DUMMY object */
 	efi.set_variable(efi_dummy_name, &EFI_DUMMY_GUID,
@@ -1211,3 +1268,22 @@ static int __init parse_efi_cmdline(char *str)
 	return 0;
 }
 early_param("efi", parse_efi_cmdline);
+
+void __init efi_apply_memmap_quirks(void)
+{
+	/*
+	 * Once setup is done earlier, unmap the EFI memory map on mismatched
+	 * firmware/kernel architectures since there is no support for runtime
+	 * services.
+	 */
+	if (!efi_is_native()) {
+		pr_info("efi: Setup done, disabling due to 32/64-bit mismatch\n");
+		efi_unmap_memmap();
+	}
+
+	/*
+	 * UV doesn't support the new EFI pagetable mapping yet.
+	 */
+	if (is_uv_system())
+		set_bit(EFI_OLD_MEMMAP, &x86_efi_facility);
+}

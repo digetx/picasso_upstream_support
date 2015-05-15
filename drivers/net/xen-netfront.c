@@ -469,17 +469,12 @@ static void xennet_make_frags(struct sk_buff *skb, struct net_device *dev,
 		len = skb_frag_size(frag);
 		offset = frag->page_offset;
 
-		/* Data must not cross a page boundary. */
-		BUG_ON(len + offset > PAGE_SIZE<<compound_order(page));
-
 		/* Skip unused frames from start of page */
 		page += offset >> PAGE_SHIFT;
 		offset &= ~PAGE_MASK;
 
 		while (len > 0) {
 			unsigned long bytes;
-
-			BUG_ON(offset >= PAGE_SIZE);
 
 			bytes = PAGE_SIZE - offset;
 			if (bytes > len)
@@ -907,6 +902,7 @@ static int handle_incoming_queue(struct net_device *dev,
 
 		/* Ethernet work: Delayed to here as it peeks the header. */
 		skb->protocol = eth_type_trans(skb, dev);
+		skb_reset_network_header(skb);
 
 		if (checksum_setup(dev, skb)) {
 			kfree_skb(skb);
@@ -1832,7 +1828,6 @@ static void netback_changed(struct xenbus_device *dev,
 	case XenbusStateReconfiguring:
 	case XenbusStateReconfigured:
 	case XenbusStateUnknown:
-	case XenbusStateClosed:
 		break;
 
 	case XenbusStateInitWait:
@@ -1847,6 +1842,10 @@ static void netback_changed(struct xenbus_device *dev,
 		netdev_notify_peers(netdev);
 		break;
 
+	case XenbusStateClosed:
+		if (dev->state == XenbusStateClosed)
+			break;
+		/* Missed the backend's CLOSING state -- fallthrough */
 	case XenbusStateClosing:
 		xenbus_frontend_closed(dev);
 		break;

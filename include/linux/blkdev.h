@@ -98,7 +98,7 @@ struct request {
 	struct list_head queuelist;
 	union {
 		struct call_single_data csd;
-		struct work_struct mq_flush_data;
+		struct work_struct mq_flush_work;
 	};
 
 	struct request_queue *q;
@@ -448,13 +448,8 @@ struct request_queue {
 	unsigned long		flush_pending_since;
 	struct list_head	flush_queue[2];
 	struct list_head	flush_data_in_flight;
-	union {
-		struct request	flush_rq;
-		struct {
-			spinlock_t mq_flush_lock;
-			struct work_struct mq_flush_work;
-		};
-	};
+	struct request		*flush_rq;
+	spinlock_t		mq_flush_lock;
 
 	struct mutex		sysfs_lock;
 
@@ -1237,10 +1232,9 @@ static inline int queue_alignment_offset(struct request_queue *q)
 static inline int queue_limit_alignment_offset(struct queue_limits *lim, sector_t sector)
 {
 	unsigned int granularity = max(lim->physical_block_size, lim->io_min);
-	unsigned int alignment = (sector << 9) & (granularity - 1);
+	unsigned int alignment = sector_div(sector, granularity >> 9) << 9;
 
-	return (granularity + lim->alignment_offset - alignment)
-		& (granularity - 1);
+	return (granularity + lim->alignment_offset - alignment) % granularity;
 }
 
 static inline int bdev_alignment_offset(struct block_device *bdev)

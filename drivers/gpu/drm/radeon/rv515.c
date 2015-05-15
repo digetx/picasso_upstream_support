@@ -586,8 +586,6 @@ int rv515_resume(struct radeon_device *rdev)
 	/* Initialize surface registers */
 	radeon_surface_init(rdev);
 
-	radeon_pm_resume(rdev);
-
 	rdev->accel_working = true;
 	r =  rv515_startup(rdev);
 	if (r) {
@@ -1277,6 +1275,9 @@ void rv515_bandwidth_update(struct radeon_device *rdev)
 	uint32_t tmp;
 	struct drm_display_mode *mode0 = NULL;
 	struct drm_display_mode *mode1 = NULL;
+
+	if (!rdev->mode_info.mode_config_initialized)
+		return;
 
 	radeon_update_display_priority(rdev);
 

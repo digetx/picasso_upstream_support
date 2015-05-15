@@ -542,8 +542,10 @@ static void sirfsoc_rx_tmo_process_tl(unsigned long param)
 	wr_regl(port, ureg->sirfsoc_rx_dma_io_ctrl,
 			rd_regl(port, ureg->sirfsoc_rx_dma_io_ctrl) |
 			SIRFUART_IO_MODE);
-	sirfsoc_uart_pio_rx_chars(port, 4 - sirfport->rx_io_count);
 	spin_unlock_irqrestore(&sirfport->rx_lock, flags);
+	spin_lock(&port->lock);
+	sirfsoc_uart_pio_rx_chars(port, 4 - sirfport->rx_io_count);
+	spin_unlock(&port->lock);
 	if (sirfport->rx_io_count == 4) {
 		spin_lock_irqsave(&sirfport->rx_lock, flags);
 		sirfport->rx_io_count = 0;
@@ -906,7 +908,7 @@ static void sirfsoc_uart_set_termios(struct uart_port *port,
 		if (termios->c_iflag & INPCK)
 			port->read_status_mask |= uint_en->sirfsoc_frm_err_en;
 	}
-	if (termios->c_iflag & (BRKINT | PARMRK))
+	if (termios->c_iflag & (IGNBRK | BRKINT | PARMRK))
 			port->read_status_mask |= uint_en->sirfsoc_rxd_brk_en;
 	if (sirfport->uart_reg->uart_type == SIRF_REAL_UART) {
 		if (termios->c_iflag & IGNPAR)

@@ -725,6 +725,7 @@ static int emac_open(struct net_device *dev)
 
 	ret = emac_mdio_probe(dev);
 	if (ret < 0) {
+		free_irq(dev->irq, dev);
 		netdev_err(dev, "cannot probe MDIO bus\n");
 		return ret;
 	}
@@ -929,6 +930,9 @@ static int emac_resume(struct platform_device *dev)
 }
 
 static const struct of_device_id emac_of_match[] = {
+	{.compatible = "allwinner,sun4i-a10-emac",},
+
+	/* Deprecated */
 	{.compatible = "allwinner,sun4i-emac",},
 	{},
 };

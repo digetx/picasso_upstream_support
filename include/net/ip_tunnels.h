@@ -40,6 +40,7 @@ struct ip_tunnel_prl_entry {
 
 struct ip_tunnel_dst {
 	struct dst_entry __rcu 		*dst;
+	__be32				 saddr;
 };
 
 struct ip_tunnel {
@@ -129,6 +130,7 @@ int ip_tunnel_changelink(struct net_device *dev, struct nlattr *tb[],
 int ip_tunnel_newlink(struct net_device *dev, struct nlattr *tb[],
 		      struct ip_tunnel_parm *p);
 void ip_tunnel_setup(struct net_device *dev, int net_id);
+void ip_tunnel_dst_reset_all(struct ip_tunnel *t);
 
 /* Extract dsfield from inner protocol */
 static inline u8 ip_tunnel_get_dsfield(const struct iphdr *iph,

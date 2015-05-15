@@ -37,7 +37,7 @@ static unsigned int kernfs_name_hash(const char *name, const void *ns)
 	hash = (end_name_hash(hash) ^ hash_ptr((void *)ns, 31));
 	hash &= 0x7fffffffU;
 	/* Reserve hash numbers 0, 1 and INT_MAX for magic directory entries */
-	if (hash < 1)
+	if (hash < 2)
 		hash += 2;
 	if (hash >= INT_MAX)
 		hash = INT_MAX - 1;
@@ -187,19 +187,23 @@ static void kernfs_deactivate(struct kernfs_node *kn)
 
 	kn->u.completion = (void *)&wait;
 
-	rwsem_acquire(&kn->dep_map, 0, 0, _RET_IP_);
+	if (kn->flags & KERNFS_LOCKDEP)
+		rwsem_acquire(&kn->dep_map, 0, 0, _RET_IP_);
 	/* atomic_add_return() is a mb(), put_active() will always see
 	 * the updated kn->u.completion.
 	 */
 	v = atomic_add_return(KN_DEACTIVATED_BIAS, &kn->active);
 
 	if (v != KN_DEACTIVATED_BIAS) {
-		lock_contended(&kn->dep_map, _RET_IP_);
+		if (kn->flags & KERNFS_LOCKDEP)
+			lock_contended(&kn->dep_map, _RET_IP_);
 		wait_for_completion(&wait);
 	}
 
-	lock_acquired(&kn->dep_map, _RET_IP_);
-	rwsem_release(&kn->dep_map, 1, _RET_IP_);
+	if (kn->flags & KERNFS_LOCKDEP) {
+		lock_acquired(&kn->dep_map, _RET_IP_);
+		rwsem_release(&kn->dep_map, 1, _RET_IP_);
+	}
 }
 
 /**

@@ -302,6 +302,9 @@ static int btrfs_ioctl_setflags(struct file *file, void __user *arg)
 			goto out_drop;
 
 	} else {
+		ret = btrfs_set_prop(inode, "btrfs.compression", NULL, 0, 0);
+		if (ret && ret != -ENODATA)
+			goto out_drop;
 		ip->flags &= ~(BTRFS_INODE_COMPRESS | BTRFS_INODE_NOCOMPRESS);
 	}
 
@@ -2705,6 +2708,9 @@ static int btrfs_extent_same(struct inode *src, u64 loff, u64 len,
 	if (src == dst)
 		return -EINVAL;
 
+	if (len == 0)
+		return 0;
+
 	btrfs_double_lock(src, loff, dst, dst_loff, len);
 
 	ret = extent_same_check_offsets(src, loff, len);
@@ -3223,6 +3229,11 @@ static noinline long btrfs_ioctl_clone(struct file *file, unsigned long srcfd,
 	if (off + len == src->i_size)
 		len = ALIGN(src->i_size, bs) - off;
 
+	if (len == 0) {
+		ret = 0;
+		goto out_unlock;
+	}
+
 	/* verify the end result is block aligned */
 	if (!IS_ALIGNED(off, bs) || !IS_ALIGNED(off + len, bs) ||
 	    !IS_ALIGNED(destoff, bs))
@@ -3535,20 +3546,6 @@ out:
 		ret = -EFAULT;
 
 	return ret;
-}
-
-static long btrfs_ioctl_global_rsv(struct btrfs_root *root, void __user *arg)
-{
-	struct btrfs_block_rsv *block_rsv = &root->fs_info->global_block_rsv;
-	u64 reserved;
-
-	spin_lock(&block_rsv->lock);
-	reserved = block_rsv->reserved;
-	spin_unlock(&block_rsv->lock);
-
-	if (arg && copy_to_user(arg, &reserved, sizeof(reserved)))
-		return -EFAULT;
-	return 0;
 }
 
 /*
@@ -4525,7 +4522,7 @@ static int btrfs_ioctl_set_fslabel(struct file *file, void __user *arg)
 	spin_lock(&root->fs_info->super_lock);
 	strcpy(super_block->label, label);
 	spin_unlock(&root->fs_info->super_lock);
-	ret = btrfs_end_transaction(trans, root);
+	ret = btrfs_commit_transaction(trans, root);
 
 out_unlock:
 	mnt_drop_write_file(file);
@@ -4668,7 +4665,7 @@ static int btrfs_ioctl_set_features(struct file *file, void __user *arg)
 	if (ret)
 		return ret;
 
-	trans = btrfs_start_transaction(root, 1);
+	trans = btrfs_start_transaction(root, 0);
 	if (IS_ERR(trans))
 		return PTR_ERR(trans);
 
@@ -4689,7 +4686,7 @@ static int btrfs_ioctl_set_features(struct file *file, void __user *arg)
 	btrfs_set_super_incompat_flags(super_block, newflags);
 	spin_unlock(&root->fs_info->super_lock);
 
-	return btrfs_end_transaction(trans, root);
+	return btrfs_commit_transaction(trans, root);
 }
 
 long btrfs_ioctl(struct file *file, unsigned int
@@ -4757,8 +4754,6 @@ long btrfs_ioctl(struct file *file, unsigned int
 		return btrfs_ioctl_logical_to_ino(root, argp);
 	case BTRFS_IOC_SPACE_INFO:
 		return btrfs_ioctl_space_info(root, argp);
-	case BTRFS_IOC_GLOBAL_RSV:
-		return btrfs_ioctl_global_rsv(root, argp);
 	case BTRFS_IOC_SYNC: {
 		int ret;
 
@@ -4766,6 +4761,12 @@ long btrfs_ioctl(struct file *file, unsigned int
 		if (ret)
 			return ret;
 		ret = btrfs_sync_fs(file->f_dentry->d_sb, 1);
+		/*
+		 * The transaction thread may want to do more work,
+		 * namely it pokes the cleaner ktread that will start
+		 * processing uncleaned subvols.
+		 */
+		wake_up_process(root->fs_info->transaction_kthread);
 		return ret;
 	}
 	case BTRFS_IOC_START_SYNC:

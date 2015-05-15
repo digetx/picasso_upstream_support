@@ -70,11 +70,6 @@
 #define SERVER_NAME_LENGTH 40
 #define SERVER_NAME_LEN_WITH_NULL     (SERVER_NAME_LENGTH + 1)
 
-/* used to define string lengths for reversing unicode strings */
-/*         (256+1)*2 = 514                                     */
-/*           (max path length + 1 for null) * 2 for unicode    */
-#define MAX_NAME 514
-
 /* SMB echo "timeout" -- FIXME: tunable? */
 #define SMB_ECHO_INTERVAL (60 * HZ)
 
@@ -228,6 +223,8 @@ struct smb_version_operations {
 	/* verify the message */
 	int (*check_message)(char *, unsigned int);
 	bool (*is_oplock_break)(char *, struct TCP_Server_Info *);
+	void (*downgrade_oplock)(struct TCP_Server_Info *,
+					struct cifsInodeInfo *, bool);
 	/* process transaction2 response */
 	bool (*check_trans2)(struct mid_q_entry *, struct TCP_Server_Info *,
 			     char *, int);
@@ -323,7 +320,8 @@ struct smb_version_operations {
 	/* async read from the server */
 	int (*async_readv)(struct cifs_readdata *);
 	/* async write to the server */
-	int (*async_writev)(struct cifs_writedata *);
+	int (*async_writev)(struct cifs_writedata *,
+			    void (*release)(struct kref *));
 	/* sync read from the server */
 	int (*sync_read)(const unsigned int, struct cifsFileInfo *,
 			 struct cifs_io_parms *, unsigned int *, char **,
@@ -395,6 +393,14 @@ struct smb_version_operations {
 	int (*set_EA)(const unsigned int, struct cifs_tcon *, const char *,
 			const char *, const void *, const __u16,
 			const struct nls_table *, int);
+	struct cifs_ntsd * (*get_acl)(struct cifs_sb_info *, struct inode *,
+			const char *, u32 *);
+	struct cifs_ntsd * (*get_acl_by_fid)(struct cifs_sb_info *,
+			const struct cifs_fid *, u32 *);
+	int (*set_acl)(struct cifs_ntsd *, __u32, struct inode *, const char *,
+			int);
+	/* check if we need to issue closedir */
+	bool (*dir_needs_close)(struct cifsFileInfo *);
 };
 
 struct smb_version_values {
@@ -506,7 +512,7 @@ struct cifs_mnt_data {
 static inline unsigned int
 get_rfc1002_length(void *buf)
 {
-	return be32_to_cpu(*((__be32 *)buf));
+	return be32_to_cpu(*((__be32 *)buf)) & 0xffffff;
 }
 
 static inline void
@@ -1064,7 +1070,7 @@ struct cifs_writedata {
 	unsigned int			pagesz;
 	unsigned int			tailsz;
 	unsigned int			nr_pages;
-	struct page			*pages[1];
+	struct page			*pages[];
 };
 
 /*
@@ -1106,6 +1112,12 @@ struct cifsInodeInfo {
 	unsigned int epoch;		/* used to track lease state changes */
 	bool delete_pending;		/* DELETE_ON_CLOSE is set */
 	bool invalid_mapping;		/* pagecache is invalid */
+	unsigned long flags;
+#define CIFS_INODE_PENDING_OPLOCK_BREAK   (0) /* oplock break in progress */
+#define CIFS_INODE_PENDING_WRITERS	  (1) /* Writes in progress */
+#define CIFS_INODE_DOWNGRADE_OPLOCK_TO_L2 (2) /* Downgrade oplock to L2 */
+	spinlock_t writers_lock;
+	unsigned int writers;		/* Number of writers on this inode */
 	unsigned long time;		/* jiffies of last update of inode */
 	u64  server_eof;		/* current file size on server -- protected by i_lock */
 	u64  uniqueid;			/* server inode number */

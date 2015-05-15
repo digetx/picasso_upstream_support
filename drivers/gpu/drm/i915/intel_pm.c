@@ -1539,6 +1539,16 @@ static void i9xx_update_wm(struct drm_crtc *unused_crtc)
 
 	DRM_DEBUG_KMS("FIFO watermarks - A: %d, B: %d\n", planea_wm, planeb_wm);
 
+	if (IS_I915GM(dev) && enabled) {
+		struct intel_framebuffer *fb;
+
+		fb = to_intel_framebuffer(enabled->fb);
+
+		/* self-refresh seems busted with untiled */
+		if (fb->obj->tiling_mode == I915_TILING_NONE)
+			enabled = NULL;
+	}
+
 	/*
 	 * Overlay gets an aggressive default since video jitter is bad.
 	 */
@@ -3493,6 +3503,8 @@ static void valleyview_setup_pctx(struct drm_device *dev)
 	u32 pcbr;
 	int pctx_size = 24*1024;
 
+	WARN_ON(!mutex_is_locked(&dev->struct_mutex));
+
 	pcbr = I915_READ(VLV_PCBR);
 	if (pcbr) {
 		/* BIOS set it up already, grab the pre-alloc'd space */
@@ -3541,8 +3553,6 @@ static void valleyview_enable_rps(struct drm_device *dev)
 				 gtfifodbg);
 		I915_WRITE(GTFIFODBG, gtfifodbg);
 	}
-
-	valleyview_setup_pctx(dev);
 
 	/* If VLV, Forcewake all wells, else re-direct to regular path */
 	gen6_gt_force_wake_get(dev_priv, FORCEWAKE_ALL);
@@ -4395,6 +4405,8 @@ void intel_enable_gt_powersave(struct drm_device *dev)
 		ironlake_enable_rc6(dev);
 		intel_init_emon(dev);
 	} else if (IS_GEN6(dev) || IS_GEN7(dev)) {
+		if (IS_VALLEYVIEW(dev))
+			valleyview_setup_pctx(dev);
 		/*
 		 * PCU communication is slow and this doesn't need to be
 		 * done at any specific time, so do this out of our fast path
@@ -5126,10 +5138,25 @@ bool intel_display_power_enabled_sw(struct drm_device *dev,
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct i915_power_domains *power_domains;
+	struct i915_power_well *power_well;
+	bool is_enabled;
+	int i;
+
+	if (dev_priv->pm.suspended)
+		return false;
 
 	power_domains = &dev_priv->power_domains;
+	is_enabled = true;
+	for_each_power_well_rev(i, power_well, BIT(domain), power_domains) {
+		if (power_well->always_on)
+			continue;
 
-	return power_domains->domain_use_count[domain];
+		if (!power_well->count) {
+			is_enabled = false;
+			break;
+		}
+	}
+	return is_enabled;
 }
 
 bool intel_display_power_enabled(struct drm_device *dev,

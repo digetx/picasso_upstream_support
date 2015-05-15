@@ -30,7 +30,6 @@
 #include <linux/of_device.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
-#include <linux/pinctrl/consumer.h>
 
 #include "macb.h"
 
@@ -632,11 +631,16 @@ static void gem_rx_refill(struct macb *bp)
 					   "Unable to allocate sk_buff\n");
 				break;
 			}
-			bp->rx_skbuff[entry] = skb;
 
 			/* now fill corresponding descriptor entry */
 			paddr = dma_map_single(&bp->pdev->dev, skb->data,
 					       bp->rx_buffer_size, DMA_FROM_DEVICE);
+			if (dma_mapping_error(&bp->pdev->dev, paddr)) {
+				dev_kfree_skb(skb);
+				break;
+			}
+
+			bp->rx_skbuff[entry] = skb;
 
 			if (entry == RX_RING_SIZE - 1)
 				paddr |= MACB_BIT(RX_WRAP);
@@ -725,7 +729,7 @@ static int gem_rx(struct macb *bp, int budget)
 		skb_put(skb, len);
 		addr = MACB_BF(RX_WADDR, MACB_BFEXT(RX_WADDR, addr));
 		dma_unmap_single(&bp->pdev->dev, addr,
-				 len, DMA_FROM_DEVICE);
+				 bp->rx_buffer_size, DMA_FROM_DEVICE);
 
 		skb->protocol = eth_type_trans(skb, bp->dev);
 		skb_checksum_none_assert(skb);
@@ -1036,11 +1040,15 @@ static int macb_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	entry = macb_tx_ring_wrap(bp->tx_head);
-	bp->tx_head++;
 	netdev_vdbg(bp->dev, "Allocated ring entry %u\n", entry);
 	mapping = dma_map_single(&bp->pdev->dev, skb->data,
 				 len, DMA_TO_DEVICE);
+	if (dma_mapping_error(&bp->pdev->dev, mapping)) {
+		kfree_skb(skb);
+		goto unlock;
+	}
 
+	bp->tx_head++;
 	tx_skb = &bp->tx_skb[entry];
 	tx_skb->skb = skb;
 	tx_skb->mapping = mapping;
@@ -1066,6 +1074,7 @@ static int macb_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (CIRC_SPACE(bp->tx_head, bp->tx_tail, TX_RING_SIZE) < 1)
 		netif_stop_queue(dev);
 
+unlock:
 	spin_unlock_irqrestore(&bp->lock, flags);
 
 	return NETDEV_TX_OK;
@@ -1800,22 +1809,12 @@ static int __init macb_probe(struct platform_device *pdev)
 	struct phy_device *phydev;
 	u32 config;
 	int err = -ENXIO;
-	struct pinctrl *pinctrl;
 	const char *mac;
 
 	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!regs) {
 		dev_err(&pdev->dev, "no mmio resource defined\n");
 		goto err_out;
-	}
-
-	pinctrl = devm_pinctrl_get_select_default(&pdev->dev);
-	if (IS_ERR(pinctrl)) {
-		err = PTR_ERR(pinctrl);
-		if (err == -EPROBE_DEFER)
-			goto err_out;
-
-		dev_warn(&pdev->dev, "No pinctrl provided\n");
 	}
 
 	err = -ENOMEM;

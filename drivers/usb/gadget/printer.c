@@ -975,6 +975,15 @@ unknown:
 		break;
 	}
 	/* host either stalls (value < 0) or reports success */
+	if (value >= 0) {
+		req->length = value;
+		req->zero = value < wLength;
+		value = usb_ep_queue(cdev->gadget->ep0, req, GFP_ATOMIC);
+		if (value < 0) {
+			ERROR(dev, "%s:%d Error!\n", __func__, __LINE__);
+			req->status = 0;
+		}
+	}
 	return value;
 }
 
@@ -1157,7 +1166,7 @@ static int __init printer_bind_config(struct usb_configuration *c)
 
 	usb_gadget_set_selfpowered(gadget);
 
-	if (gadget->is_otg) {
+	if (gadget_is_otg(gadget)) {
 		otg_descriptor.bmAttributes |= USB_OTG_HNP;
 		printer_cfg_driver.descriptors = otg_desc;
 		printer_cfg_driver.bmAttributes |= USB_CONFIG_ATT_WAKEUP;

@@ -24,12 +24,12 @@
 #include <linux/xattr.h>
 #include <linux/posix_acl_xattr.h>
 #include <linux/radix-tree.h>
-#include <linux/crc32c.h>
 #include <linux/vmalloc.h>
 #include <linux/string.h>
 
 #include "send.h"
 #include "backref.h"
+#include "hash.h"
 #include "locking.h"
 #include "disk-io.h"
 #include "btrfs_inode.h"
@@ -620,7 +620,7 @@ static int send_cmd(struct send_ctx *sctx)
 	hdr->len = cpu_to_le32(sctx->send_size - sizeof(*hdr));
 	hdr->crc = 0;
 
-	crc = crc32c(0, (unsigned char *)sctx->send_buf, sctx->send_size);
+	crc = btrfs_crc32c(0, (unsigned char *)sctx->send_buf, sctx->send_size);
 	hdr->crc = cpu_to_le32(crc);
 
 	ret = write_buf(sctx->send_filp, sctx->send_buf, sctx->send_size,
@@ -1332,6 +1332,16 @@ verbose_printk(KERN_DEBUG "btrfs: find_extent_clone: data_offset=%llu, "
 	}
 
 	if (cur_clone_root) {
+		if (compressed != BTRFS_COMPRESS_NONE) {
+			/*
+			 * Offsets given by iterate_extent_inodes() are relative
+			 * to the start of the extent, we need to add logical
+			 * offset from the file extent item.
+			 * (See why at backref.c:check_extent_in_eb())
+			 */
+			cur_clone_root->offset += btrfs_file_extent_offset(eb,
+									   fi);
+		}
 		*found = cur_clone_root;
 		ret = 0;
 	} else {
@@ -1579,6 +1589,10 @@ static int lookup_dir_item_inode(struct btrfs_root *root,
 		goto out;
 	}
 	btrfs_dir_item_key_to_cpu(path->nodes[0], di, &key);
+	if (key.type == BTRFS_ROOT_ITEM_KEY) {
+		ret = -ENOENT;
+		goto out;
+	}
 	*found_inode = key.objectid;
 	*found_type = btrfs_dir_type(path->nodes[0], di);
 
@@ -2774,8 +2788,6 @@ static int add_waiting_dir_move(struct send_ctx *sctx, u64 ino)
 	return 0;
 }
 
-#ifdef CONFIG_BTRFS_ASSERT
-
 static int del_waiting_dir_move(struct send_ctx *sctx, u64 ino)
 {
 	struct rb_node *n = sctx->waiting_dir_moves.rb_node;
@@ -2795,8 +2807,6 @@ static int del_waiting_dir_move(struct send_ctx *sctx, u64 ino)
 	}
 	return -ENOENT;
 }
-
-#endif
 
 static int add_pending_dir_move(struct send_ctx *sctx, u64 parent_ino)
 {
@@ -2902,7 +2912,9 @@ static int apply_dir_move(struct send_ctx *sctx, struct pending_dir_move *pm)
 	}
 
 	sctx->send_progress = sctx->cur_ino + 1;
-	ASSERT(del_waiting_dir_move(sctx, pm->ino) == 0);
+	ret = del_waiting_dir_move(sctx, pm->ino);
+	ASSERT(ret == 0);
+
 	ret = get_cur_path(sctx, pm->ino, pm->gen, to_path);
 	if (ret < 0)
 		goto out;
@@ -4716,7 +4728,9 @@ static int finish_inode_if_needed(struct send_ctx *sctx, int at_end)
 
 	if (S_ISREG(sctx->cur_inode_mode)) {
 		if (need_send_hole(sctx)) {
-			if (sctx->cur_inode_last_extent == (u64)-1) {
+			if (sctx->cur_inode_last_extent == (u64)-1 ||
+			    sctx->cur_inode_last_extent <
+			    sctx->cur_inode_size) {
 				ret = get_last_extent(sctx, (u64)-1);
 				if (ret)
 					goto out;

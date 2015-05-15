@@ -29,6 +29,8 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/security.h>
+#include <net/net_namespace.h>
+#include <net/sock.h>
 #include "audit.h"
 
 /*
@@ -427,6 +429,7 @@ static struct audit_entry *audit_data_to_entry(struct audit_rule_data *data,
 		if ((f->type == AUDIT_LOGINUID) && (f->val == AUDIT_UID_UNSET)) {
 			f->type = AUDIT_LOGINUID_SET;
 			f->val = 0;
+			entry->rule.pflags |= AUDIT_LOGINUID_LEGACY;
 		}
 
 		err = audit_field_valid(entry, f);
@@ -602,6 +605,13 @@ static struct audit_rule_data *audit_krule_to_data(struct audit_krule *krule)
 			data->buflen += data->values[i] =
 				audit_pack_string(&bufp, krule->filterkey);
 			break;
+		case AUDIT_LOGINUID_SET:
+			if (krule->pflags & AUDIT_LOGINUID_LEGACY && !f->val) {
+				data->fields[i] = AUDIT_LOGINUID;
+				data->values[i] = AUDIT_UID_UNSET;
+				break;
+			}
+			/* fallthrough if set */
 		default:
 			data->values[i] = f->val;
 		}
@@ -618,6 +628,7 @@ static int audit_compare_rule(struct audit_krule *a, struct audit_krule *b)
 	int i;
 
 	if (a->flags != b->flags ||
+	    a->pflags != b->pflags ||
 	    a->listnr != b->listnr ||
 	    a->action != b->action ||
 	    a->field_count != b->field_count)
@@ -736,6 +747,7 @@ struct audit_entry *audit_dupe_rule(struct audit_krule *old)
 	new = &entry->rule;
 	new->vers_ops = old->vers_ops;
 	new->flags = old->flags;
+	new->pflags = old->pflags;
 	new->listnr = old->listnr;
 	new->action = old->action;
 	for (i = 0; i < AUDIT_BITMASK_SIZE; i++)
@@ -1065,11 +1077,13 @@ int audit_rule_change(int type, __u32 portid, int seq, void *data,
 
 /**
  * audit_list_rules_send - list the audit rules
- * @portid: target portid for netlink audit messages
+ * @request_skb: skb of request we are replying to (used to target the reply)
  * @seq: netlink audit message sequence (serial) number
  */
-int audit_list_rules_send(__u32 portid, int seq)
+int audit_list_rules_send(struct sk_buff *request_skb, int seq)
 {
+	u32 portid = NETLINK_CB(request_skb).portid;
+	struct net *net = sock_net(NETLINK_CB(request_skb).sk);
 	struct task_struct *tsk;
 	struct audit_netlink_list *dest;
 	int err = 0;
@@ -1083,8 +1097,8 @@ int audit_list_rules_send(__u32 portid, int seq)
 	dest = kmalloc(sizeof(struct audit_netlink_list), GFP_KERNEL);
 	if (!dest)
 		return -ENOMEM;
+	dest->net = get_net(net);
 	dest->portid = portid;
-	dest->pid = task_pid_vnr(current);
 	skb_queue_head_init(&dest->q);
 
 	mutex_lock(&audit_filter_mutex);

@@ -1501,7 +1501,7 @@ static int dwc2_hcd_hub_control(struct dwc2_hsotg *hsotg, u16 typereq,
 			dev_dbg(hsotg->dev,
 				"ClearPortFeature USB_PORT_FEAT_SUSPEND\n");
 			writel(0, hsotg->regs + PCGCTL);
-			usleep_range(20000, 40000);
+			msleep(USB_RESUME_TIMEOUT);
 
 			hprt0 = dwc2_read_hprt0(hsotg);
 			hprt0 |= HPRT0_RES;
@@ -2565,25 +2565,14 @@ static void _dwc2_hcd_endpoint_reset(struct usb_hcd *hcd,
 				     struct usb_host_endpoint *ep)
 {
 	struct dwc2_hsotg *hsotg = dwc2_hcd_to_hsotg(hcd);
-	int is_control = usb_endpoint_xfer_control(&ep->desc);
-	int is_out = usb_endpoint_dir_out(&ep->desc);
-	int epnum = usb_endpoint_num(&ep->desc);
-	struct usb_device *udev;
 	unsigned long flags;
 
 	dev_dbg(hsotg->dev,
 		"DWC OTG HCD EP RESET: bEndpointAddress=0x%02x\n",
 		ep->desc.bEndpointAddress);
 
-	udev = to_usb_device(hsotg->dev);
-
 	spin_lock_irqsave(&hsotg->lock, flags);
-
-	usb_settoggle(udev, epnum, is_out, 0);
-	if (is_control)
-		usb_settoggle(udev, epnum, !is_out, 0);
 	dwc2_hcd_endpoint_reset(hsotg, ep);
-
 	spin_unlock_irqrestore(&hsotg->lock, flags);
 }
 

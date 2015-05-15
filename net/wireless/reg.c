@@ -1547,7 +1547,7 @@ static enum reg_request_treatment
 reg_process_hint_driver(struct wiphy *wiphy,
 			struct regulatory_request *driver_request)
 {
-	const struct ieee80211_regdomain *regd;
+	const struct ieee80211_regdomain *regd, *tmp;
 	enum reg_request_treatment treatment;
 
 	treatment = __reg_process_hint_driver(driver_request);
@@ -1566,7 +1566,10 @@ reg_process_hint_driver(struct wiphy *wiphy,
 			kfree(driver_request);
 			return REG_REQ_IGNORE;
 		}
+
+		tmp = get_wiphy_regdom(wiphy);
 		rcu_assign_pointer(wiphy->regd, regd);
+		rcu_free_regdom(tmp);
 	}
 
 
@@ -1625,11 +1628,8 @@ __reg_process_hint_country_ie(struct wiphy *wiphy,
 			return REG_REQ_IGNORE;
 		return REG_REQ_ALREADY_SET;
 	}
-	/*
-	 * Two consecutive Country IE hints on the same wiphy.
-	 * This should be picked up early by the driver/stack
-	 */
-	if (WARN_ON(regdom_changes(country_ie_request->alpha2)))
+
+	if (regdom_changes(country_ie_request->alpha2))
 		return REG_REQ_OK;
 	return REG_REQ_ALREADY_SET;
 }
@@ -1683,16 +1683,8 @@ static void reg_process_hint(struct regulatory_request *reg_request)
 	struct wiphy *wiphy = NULL;
 	enum reg_request_treatment treatment;
 
-	if (WARN_ON(!reg_request->alpha2))
-		return;
-
 	if (reg_request->wiphy_idx != WIPHY_IDX_INVALID)
 		wiphy = wiphy_idx_to_wiphy(reg_request->wiphy_idx);
-
-	if (reg_request->initiator == NL80211_REGDOM_SET_BY_DRIVER && !wiphy) {
-		kfree(reg_request);
-		return;
-	}
 
 	switch (reg_request->initiator) {
 	case NL80211_REGDOM_SET_BY_CORE:
@@ -1700,26 +1692,35 @@ static void reg_process_hint(struct regulatory_request *reg_request)
 		return;
 	case NL80211_REGDOM_SET_BY_USER:
 		treatment = reg_process_hint_user(reg_request);
-		if (treatment == REG_REQ_OK ||
+		if (treatment == REG_REQ_IGNORE ||
 		    treatment == REG_REQ_ALREADY_SET)
 			return;
 		schedule_delayed_work(&reg_timeout, msecs_to_jiffies(3142));
 		return;
 	case NL80211_REGDOM_SET_BY_DRIVER:
+		if (!wiphy)
+			goto out_free;
 		treatment = reg_process_hint_driver(wiphy, reg_request);
 		break;
 	case NL80211_REGDOM_SET_BY_COUNTRY_IE:
+		if (!wiphy)
+			goto out_free;
 		treatment = reg_process_hint_country_ie(wiphy, reg_request);
 		break;
 	default:
 		WARN(1, "invalid initiator %d\n", reg_request->initiator);
-		return;
+		goto out_free;
 	}
 
 	/* This is required so that the orig_* parameters are saved */
 	if (treatment == REG_REQ_ALREADY_SET && wiphy &&
 	    wiphy->regulatory_flags & REGULATORY_STRICT_REG)
 		wiphy_update_regulatory(wiphy, reg_request->initiator);
+
+	return;
+
+out_free:
+	kfree(reg_request);
 }
 
 /*
@@ -2373,6 +2374,7 @@ static int reg_set_rd_country_ie(const struct ieee80211_regdomain *rd,
 int set_regdom(const struct ieee80211_regdomain *rd)
 {
 	struct regulatory_request *lr;
+	bool user_reset = false;
 	int r;
 
 	if (!reg_is_valid_request(rd->alpha2)) {
@@ -2389,6 +2391,7 @@ int set_regdom(const struct ieee80211_regdomain *rd)
 		break;
 	case NL80211_REGDOM_SET_BY_USER:
 		r = reg_set_rd_user(rd, lr);
+		user_reset = true;
 		break;
 	case NL80211_REGDOM_SET_BY_DRIVER:
 		r = reg_set_rd_driver(rd, lr);
@@ -2402,8 +2405,14 @@ int set_regdom(const struct ieee80211_regdomain *rd)
 	}
 
 	if (r) {
-		if (r == -EALREADY)
+		switch (r) {
+		case -EALREADY:
 			reg_set_request_processed();
+			break;
+		default:
+			/* Back to world regulatory in case of errors */
+			restore_regulatory_settings(user_reset);
+		}
 
 		kfree(rd);
 		return r;

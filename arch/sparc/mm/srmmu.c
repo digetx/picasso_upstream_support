@@ -14,6 +14,7 @@
 #include <linux/pagemap.h>
 #include <linux/vmalloc.h>
 #include <linux/kdebug.h>
+#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/log2.h>
@@ -62,6 +63,7 @@ extern unsigned long last_valid_pfn;
 static pgd_t *srmmu_swapper_pg_dir;
 
 const struct sparc32_cachetlb_ops *sparc32_cachetlb_ops;
+EXPORT_SYMBOL(sparc32_cachetlb_ops);
 
 #ifdef CONFIG_SMP
 const struct sparc32_cachetlb_ops *local_ops;
@@ -458,10 +460,12 @@ static void __init sparc_context_init(int numctx)
 void switch_mm(struct mm_struct *old_mm, struct mm_struct *mm,
 	       struct task_struct *tsk)
 {
+	unsigned long flags;
+
 	if (mm->context == NO_CONTEXT) {
-		spin_lock(&srmmu_context_spinlock);
+		spin_lock_irqsave(&srmmu_context_spinlock, flags);
 		alloc_context(old_mm, mm);
-		spin_unlock(&srmmu_context_spinlock);
+		spin_unlock_irqrestore(&srmmu_context_spinlock, flags);
 		srmmu_ctxd_set(&srmmu_context_table[mm->context], mm->pgd);
 	}
 
@@ -986,14 +990,15 @@ int init_new_context(struct task_struct *tsk, struct mm_struct *mm)
 
 void destroy_context(struct mm_struct *mm)
 {
+	unsigned long flags;
 
 	if (mm->context != NO_CONTEXT) {
 		flush_cache_mm(mm);
 		srmmu_ctxd_set(&srmmu_context_table[mm->context], srmmu_swapper_pg_dir);
 		flush_tlb_mm(mm);
-		spin_lock(&srmmu_context_spinlock);
+		spin_lock_irqsave(&srmmu_context_spinlock, flags);
 		free_context(mm->context);
-		spin_unlock(&srmmu_context_spinlock);
+		spin_unlock_irqrestore(&srmmu_context_spinlock, flags);
 		mm->context = NO_CONTEXT;
 	}
 }

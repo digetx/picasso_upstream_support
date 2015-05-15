@@ -1877,7 +1877,16 @@ int trinity_dpm_init(struct radeon_device *rdev)
 	for (i = 0; i < SUMO_MAX_HARDWARE_POWERLEVELS; i++)
 		pi->at[i] = TRINITY_AT_DFLT;
 
-	pi->enable_bapm = false;
+	/* There are stability issues reported on with
+	 * bapm enabled when switching between AC and battery
+	 * power.  At the same time, some MSI boards hang
+	 * if it's not enabled and dpm is enabled.  Just enable
+	 * it for MSI boards right now.
+	 */
+	if (rdev->pdev->subsystem_vendor == 0x1462)
+		pi->enable_bapm = true;
+	else
+		pi->enable_bapm = false;
 	pi->enable_nbps_policy = true;
 	pi->enable_sclk_ds = true;
 	pi->enable_gfx_power_gating = true;
@@ -1926,7 +1935,8 @@ void trinity_dpm_print_power_state(struct radeon_device *rdev,
 void trinity_dpm_debugfs_print_current_performance_level(struct radeon_device *rdev,
 							 struct seq_file *m)
 {
-	struct radeon_ps *rps = rdev->pm.dpm.current_ps;
+	struct trinity_power_info *pi = trinity_get_pi(rdev);
+	struct radeon_ps *rps = &pi->current_rps;
 	struct trinity_ps *ps = trinity_get_ps(rps);
 	struct trinity_pl *pl;
 	u32 current_index =
