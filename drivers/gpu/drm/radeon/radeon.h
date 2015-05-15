@@ -245,6 +245,7 @@ bool radeon_get_bios(struct radeon_device *rdev);
  * Dummy page
  */
 struct radeon_dummy_page {
+	uint64_t	entry;
 	struct page	*page;
 	dma_addr_t	addr;
 };
@@ -626,6 +627,7 @@ struct radeon_gart {
 	unsigned			table_size;
 	struct page			**pages;
 	dma_addr_t			*pages_addr;
+	uint64_t			*pages_entry;
 	bool				ready;
 };
 
@@ -1133,6 +1135,8 @@ struct radeon_wb {
 #define R600_WB_EVENT_OFFSET     3072
 #define CIK_WB_CP1_WPTR_OFFSET     3328
 #define CIK_WB_CP2_WPTR_OFFSET     3584
+#define R600_WB_DMA_RING_TEST_OFFSET 3588
+#define CAYMAN_WB_DMA1_RING_TEST_OFFSET 3592
 
 /**
  * struct radeon_pm - power management datas
@@ -1540,6 +1544,7 @@ struct radeon_dpm {
 	int			new_active_crtc_count;
 	u32			current_active_crtcs;
 	int			current_active_crtc_count;
+	bool single_display;
 	struct radeon_dpm_dynamic_state dyn_state;
 	struct radeon_dpm_fan fan;
 	u32 tdp_limit;
@@ -1817,8 +1822,9 @@ struct radeon_asic {
 	/* gart */
 	struct {
 		void (*tlb_flush)(struct radeon_device *rdev);
+		uint64_t (*get_page_entry)(uint64_t addr, uint32_t flags);
 		void (*set_page)(struct radeon_device *rdev, unsigned i,
-				 uint64_t addr, uint32_t flags);
+				 uint64_t entry);
 	} gart;
 	struct {
 		int (*init)(struct radeon_device *rdev);
@@ -2816,7 +2822,8 @@ static inline void radeon_ring_write(struct radeon_ring *ring, uint32_t v)
 #define radeon_vga_set_state(rdev, state) (rdev)->asic->vga_set_state((rdev), (state))
 #define radeon_asic_reset(rdev) (rdev)->asic->asic_reset((rdev))
 #define radeon_gart_tlb_flush(rdev) (rdev)->asic->gart.tlb_flush((rdev))
-#define radeon_gart_set_page(rdev, i, p, f) (rdev)->asic->gart.set_page((rdev), (i), (p), (f))
+#define radeon_gart_get_page_entry(a, f) (rdev)->asic->gart.get_page_entry((a), (f))
+#define radeon_gart_set_page(rdev, i, e) (rdev)->asic->gart.set_page((rdev), (i), (e))
 #define radeon_asic_vm_init(rdev) (rdev)->asic->vm.init((rdev))
 #define radeon_asic_vm_fini(rdev) (rdev)->asic->vm.fini((rdev))
 #define radeon_asic_vm_copy_pages(rdev, ib, pe, src, count) ((rdev)->asic->vm.copy_pages((rdev), (ib), (pe), (src), (count)))

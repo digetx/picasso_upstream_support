@@ -713,14 +713,10 @@ static int nft_flush_table(struct nft_ctx *ctx)
 	struct nft_chain *chain, *nc;
 	struct nft_set *set, *ns;
 
-	list_for_each_entry_safe(chain, nc, &ctx->table->chains, list) {
+	list_for_each_entry(chain, &ctx->table->chains, list) {
 		ctx->chain = chain;
 
 		err = nft_delrule_by_chain(ctx);
-		if (err < 0)
-			goto out;
-
-		err = nft_delchain(ctx);
 		if (err < 0)
 			goto out;
 	}
@@ -731,6 +727,14 @@ static int nft_flush_table(struct nft_ctx *ctx)
 			continue;
 
 		err = nft_delset(ctx, set);
+		if (err < 0)
+			goto out;
+	}
+
+	list_for_each_entry_safe(chain, nc, &ctx->table->chains, list) {
+		ctx->chain = chain;
+
+		err = nft_delchain(ctx);
 		if (err < 0)
 			goto out;
 	}
@@ -1328,10 +1332,10 @@ static int nf_tables_newchain(struct sock *nlsk, struct sk_buff *skb,
 			basechain->stats = stats;
 		} else {
 			stats = netdev_alloc_pcpu_stats(struct nft_stats);
-			if (IS_ERR(stats)) {
+			if (stats == NULL) {
 				module_put(type->owner);
 				kfree(basechain);
-				return PTR_ERR(stats);
+				return -ENOMEM;
 			}
 			rcu_assign_pointer(basechain->stats, stats);
 		}
@@ -3484,13 +3488,8 @@ static void nft_chain_commit_update(struct nft_trans *trans)
 	}
 }
 
-/* Schedule objects for release via rcu to make sure no packets are accesing
- * removed rules.
- */
-static void nf_tables_commit_release_rcu(struct rcu_head *rt)
+static void nf_tables_commit_release(struct nft_trans *trans)
 {
-	struct nft_trans *trans = container_of(rt, struct nft_trans, rcu_head);
-
 	switch (trans->msg_type) {
 	case NFT_MSG_DELTABLE:
 		nf_tables_table_destroy(&trans->ctx);
@@ -3612,10 +3611,11 @@ static int nf_tables_commit(struct sk_buff *skb)
 		}
 	}
 
+	synchronize_rcu();
+
 	list_for_each_entry_safe(trans, next, &net->nft.commit_list, list) {
 		list_del(&trans->list);
-		trans->ctx.nla = NULL;
-		call_rcu(&trans->rcu_head, nf_tables_commit_release_rcu);
+		nf_tables_commit_release(trans);
 	}
 
 	nf_tables_gen_notify(net, skb, NFT_MSG_NEWGEN);
@@ -3623,13 +3623,8 @@ static int nf_tables_commit(struct sk_buff *skb)
 	return 0;
 }
 
-/* Schedule objects for release via rcu to make sure no packets are accesing
- * aborted rules.
- */
-static void nf_tables_abort_release_rcu(struct rcu_head *rt)
+static void nf_tables_abort_release(struct nft_trans *trans)
 {
-	struct nft_trans *trans = container_of(rt, struct nft_trans, rcu_head);
-
 	switch (trans->msg_type) {
 	case NFT_MSG_NEWTABLE:
 		nf_tables_table_destroy(&trans->ctx);
@@ -3725,11 +3720,12 @@ static int nf_tables_abort(struct sk_buff *skb)
 		}
 	}
 
+	synchronize_rcu();
+
 	list_for_each_entry_safe_reverse(trans, next,
 					 &net->nft.commit_list, list) {
 		list_del(&trans->list);
-		trans->ctx.nla = NULL;
-		call_rcu(&trans->rcu_head, nf_tables_abort_release_rcu);
+		nf_tables_abort_release(trans);
 	}
 
 	return 0;
@@ -3743,6 +3739,20 @@ static const struct nfnetlink_subsystem nf_tables_subsys = {
 	.commit		= nf_tables_commit,
 	.abort		= nf_tables_abort,
 };
+
+int nft_chain_validate_dependency(const struct nft_chain *chain,
+				  enum nft_chain_type type)
+{
+	const struct nft_base_chain *basechain;
+
+	if (chain->flags & NFT_BASE_CHAIN) {
+		basechain = nft_base_chain(chain);
+		if (basechain->type->type != type)
+			return -EOPNOTSUPP;
+	}
+	return 0;
+}
+EXPORT_SYMBOL_GPL(nft_chain_validate_dependency);
 
 /*
  * Loop detection - walk through the ruleset beginning at the destination chain

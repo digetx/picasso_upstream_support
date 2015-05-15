@@ -251,22 +251,19 @@ static int radeon_cs_get_ring(struct radeon_cs_parser *p, u32 ring, s32 priority
 
 static int radeon_cs_sync_rings(struct radeon_cs_parser *p)
 {
-	int i, r = 0;
+	struct radeon_cs_reloc *reloc;
+	int r;
 
-	for (i = 0; i < p->nrelocs; i++) {
+	list_for_each_entry(reloc, &p->validated, tv.head) {
 		struct reservation_object *resv;
 
-		if (!p->relocs[i].robj)
-			continue;
-
-		resv = p->relocs[i].robj->tbo.resv;
+		resv = reloc->robj->tbo.resv;
 		r = radeon_semaphore_sync_resv(p->rdev, p->ib.semaphore, resv,
-					       p->relocs[i].tv.shared);
-
+					       reloc->tv.shared);
 		if (r)
-			break;
+			return r;
 	}
-	return r;
+	return 0;
 }
 
 /* XXX: note that this is called from the legacy UMS CS ioctl as well */
@@ -278,11 +275,13 @@ int radeon_cs_parser_init(struct radeon_cs_parser *p, void *data)
 	u32 ring = RADEON_CS_RING_GFX;
 	s32 priority = 0;
 
+	INIT_LIST_HEAD(&p->validated);
+
 	if (!cs->num_chunks) {
 		return 0;
 	}
+
 	/* get chunks */
-	INIT_LIST_HEAD(&p->validated);
 	p->idx = 0;
 	p->ib.sa_bo = NULL;
 	p->ib.semaphore = NULL;
@@ -450,7 +449,7 @@ static void radeon_cs_parser_fini(struct radeon_cs_parser *parser, int error, bo
 	kfree(parser->track);
 	kfree(parser->relocs);
 	kfree(parser->relocs_ptr);
-	kfree(parser->vm_bos);
+	drm_free_large(parser->vm_bos);
 	for (i = 0; i < parser->nchunks; i++)
 		drm_free_large(parser->chunks[i].kdata);
 	kfree(parser->chunks);

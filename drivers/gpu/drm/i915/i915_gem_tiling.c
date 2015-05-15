@@ -315,9 +315,10 @@ i915_gem_set_tiling(struct drm_device *dev, void *data,
 		return -EINVAL;
 	}
 
+	mutex_lock(&dev->struct_mutex);
 	if (i915_gem_obj_is_pinned(obj) || obj->framebuffer_references) {
-		drm_gem_object_unreference_unlocked(&obj->base);
-		return -EBUSY;
+		ret = -EBUSY;
+		goto err;
 	}
 
 	if (args->tiling_mode == I915_TILING_NONE) {
@@ -349,7 +350,6 @@ i915_gem_set_tiling(struct drm_device *dev, void *data,
 		}
 	}
 
-	mutex_lock(&dev->struct_mutex);
 	if (args->tiling_mode != obj->tiling_mode ||
 	    args->stride != obj->stride) {
 		/* We need to rebind the object if its current allocation
@@ -364,22 +364,9 @@ i915_gem_set_tiling(struct drm_device *dev, void *data,
 		 * has to also include the unfenced register the GPU uses
 		 * whilst executing a fenced command for an untiled object.
 		 */
-
-		obj->map_and_fenceable =
-			!i915_gem_obj_ggtt_bound(obj) ||
-			(i915_gem_obj_ggtt_offset(obj) +
-			 obj->base.size <= dev_priv->gtt.mappable_end &&
-			 i915_gem_object_fence_ok(obj, args->tiling_mode));
-
-		/* Rebind if we need a change of alignment */
-		if (!obj->map_and_fenceable) {
-			u32 unfenced_align =
-				i915_gem_get_gtt_alignment(dev, obj->base.size,
-							    args->tiling_mode,
-							    false);
-			if (i915_gem_obj_ggtt_offset(obj) & (unfenced_align - 1))
-				ret = i915_gem_object_ggtt_unbind(obj);
-		}
+		if (obj->map_and_fenceable &&
+		    !i915_gem_object_fence_ok(obj, args->tiling_mode))
+			ret = i915_gem_object_ggtt_unbind(obj);
 
 		if (ret == 0) {
 			obj->fence_dirty =
@@ -408,6 +395,7 @@ i915_gem_set_tiling(struct drm_device *dev, void *data,
 		obj->bit_17 = NULL;
 	}
 
+err:
 	drm_gem_object_unreference(&obj->base);
 	mutex_unlock(&dev->struct_mutex);
 

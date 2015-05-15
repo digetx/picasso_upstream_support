@@ -40,7 +40,6 @@ BEGIN_FTR_SECTION;						\
 	b	1f;						\
 END_FTR_SECTION(0, 1);						\
 	ld	r12,opal_tracepoint_refcount@toc(r2);		\
-	std	r12,32(r1);					\
 	cmpdi	r12,0;						\
 	bne-	LABEL;						\
 1:
@@ -58,7 +57,7 @@ END_FTR_SECTION(0, 1);						\
  */
 
 #define OPAL_CALL(name, token)		\
- _GLOBAL(name);				\
+ _GLOBAL_TOC(name);			\
 	mflr	r0;			\
 	std	r0,16(r1);		\
 	li	r0,token;		\

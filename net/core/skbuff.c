@@ -552,20 +552,13 @@ static void kfree_skbmem(struct sk_buff *skb)
 	case SKB_FCLONE_CLONE:
 		fclones = container_of(skb, struct sk_buff_fclones, skb2);
 
-		/* Warning : We must perform the atomic_dec_and_test() before
-		 * setting skb->fclone back to SKB_FCLONE_FREE, otherwise
-		 * skb_clone() could set clone_ref to 2 before our decrement.
-		 * Anyway, if we are going to free the structure, no need to
-		 * rewrite skb->fclone.
+		/* The clone portion is available for
+		 * fast-cloning again.
 		 */
-		if (atomic_dec_and_test(&fclones->fclone_ref)) {
+		skb->fclone = SKB_FCLONE_FREE;
+
+		if (atomic_dec_and_test(&fclones->fclone_ref))
 			kmem_cache_free(skbuff_fclone_cache, fclones);
-		} else {
-			/* The clone portion is available for
-			 * fast-cloning again.
-			 */
-			skb->fclone = SKB_FCLONE_FREE;
-		}
 		break;
 	}
 }
@@ -887,11 +880,7 @@ struct sk_buff *skb_clone(struct sk_buff *skb, gfp_t gfp_mask)
 	if (skb->fclone == SKB_FCLONE_ORIG &&
 	    n->fclone == SKB_FCLONE_FREE) {
 		n->fclone = SKB_FCLONE_CLONE;
-		/* As our fastclone was free, clone_ref must be 1 at this point.
-		 * We could use atomic_inc() here, but it is faster
-		 * to set the final value.
-		 */
-		atomic_set(&fclones->fclone_ref, 2);
+		atomic_inc(&fclones->fclone_ref);
 	} else {
 		if (skb_pfmemalloc(skb))
 			gfp_mask |= __GFP_MEMALLOC;
@@ -3526,13 +3515,14 @@ struct sk_buff *sock_dequeue_err_skb(struct sock *sk)
 {
 	struct sk_buff_head *q = &sk->sk_error_queue;
 	struct sk_buff *skb, *skb_next;
+	unsigned long flags;
 	int err = 0;
 
-	spin_lock_bh(&q->lock);
+	spin_lock_irqsave(&q->lock, flags);
 	skb = __skb_dequeue(q);
 	if (skb && (skb_next = skb_peek(q)))
 		err = SKB_EXT_ERR(skb_next)->ee.ee_errno;
-	spin_unlock_bh(&q->lock);
+	spin_unlock_irqrestore(&q->lock, flags);
 
 	sk->sk_err = err;
 	if (err)
@@ -4043,17 +4033,20 @@ EXPORT_SYMBOL(skb_try_coalesce);
  */
 void skb_scrub_packet(struct sk_buff *skb, bool xnet)
 {
-	if (xnet)
-		skb_orphan(skb);
 	skb->tstamp.tv64 = 0;
 	skb->pkt_type = PACKET_HOST;
 	skb->skb_iif = 0;
 	skb->ignore_df = 0;
 	skb_dst_drop(skb);
-	skb->mark = 0;
 	secpath_reset(skb);
 	nf_reset(skb);
 	nf_reset_trace(skb);
+
+	if (!xnet)
+		return;
+
+	skb_orphan(skb);
+	skb->mark = 0;
 }
 EXPORT_SYMBOL_GPL(skb_scrub_packet);
 
@@ -4070,15 +4063,22 @@ EXPORT_SYMBOL_GPL(skb_scrub_packet);
 unsigned int skb_gso_transport_seglen(const struct sk_buff *skb)
 {
 	const struct skb_shared_info *shinfo = skb_shinfo(skb);
+	unsigned int thlen = 0;
 
-	if (likely(shinfo->gso_type & (SKB_GSO_TCPV4 | SKB_GSO_TCPV6)))
-		return tcp_hdrlen(skb) + shinfo->gso_size;
+	if (skb->encapsulation) {
+		thlen = skb_inner_transport_header(skb) -
+			skb_transport_header(skb);
 
+		if (likely(shinfo->gso_type & (SKB_GSO_TCPV4 | SKB_GSO_TCPV6)))
+			thlen += inner_tcp_hdrlen(skb);
+	} else if (likely(shinfo->gso_type & (SKB_GSO_TCPV4 | SKB_GSO_TCPV6))) {
+		thlen = tcp_hdrlen(skb);
+	}
 	/* UFO sets gso_size to the size of the fragmentation
 	 * payload, i.e. the size of the L4 (UDP) header is already
 	 * accounted for.
 	 */
-	return shinfo->gso_size;
+	return thlen + shinfo->gso_size;
 }
 EXPORT_SYMBOL_GPL(skb_gso_transport_seglen);
 

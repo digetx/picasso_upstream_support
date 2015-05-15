@@ -2806,6 +2806,13 @@ intel_dp_dpcd_read_wake(struct drm_dp_aux *aux, unsigned int offset,
 	ssize_t ret;
 	int i;
 
+	/*
+	 * Sometime we just get the same incorrect byte repeated
+	 * over the entire buffer. Doing just one throw away read
+	 * initially seems to "solve" it.
+	 */
+	drm_dp_dpcd_read(aux, DP_DPCD_REV, buffer, 1);
+
 	for (i = 0; i < 3; i++) {
 		ret = drm_dp_dpcd_read(aux, offset, buffer, size);
 		if (ret == size)
@@ -3638,8 +3645,6 @@ intel_dp_link_down(struct intel_dp *intel_dp)
 	enum port port = intel_dig_port->port;
 	struct drm_device *dev = intel_dig_port->base.base.dev;
 	struct drm_i915_private *dev_priv = dev->dev_private;
-	struct intel_crtc *intel_crtc =
-		to_intel_crtc(intel_dig_port->base.base.crtc);
 	uint32_t DP = intel_dp->DP;
 
 	if (WARN_ON(HAS_DDI(dev)))
@@ -3664,8 +3669,6 @@ intel_dp_link_down(struct intel_dp *intel_dp)
 
 	if (HAS_PCH_IBX(dev) &&
 	    I915_READ(intel_dp->output_reg) & DP_PIPEB_SELECT) {
-		struct drm_crtc *crtc = intel_dig_port->base.base.crtc;
-
 		/* Hardware workaround: leaving our transcoder select
 		 * set to transcoder B while it's off will prevent the
 		 * corresponding HDMI output on transcoder A.
@@ -3676,18 +3679,7 @@ intel_dp_link_down(struct intel_dp *intel_dp)
 		 */
 		DP &= ~DP_PIPEB_SELECT;
 		I915_WRITE(intel_dp->output_reg, DP);
-
-		/* Changes to enable or select take place the vblank
-		 * after being written.
-		 */
-		if (WARN_ON(crtc == NULL)) {
-			/* We should never try to disable a port without a crtc
-			 * attached. For paranoia keep the code around for a
-			 * bit. */
-			POSTING_READ(intel_dp->output_reg);
-			msleep(50);
-		} else
-			intel_wait_for_vblank(dev, intel_crtc->pipe);
+		POSTING_READ(intel_dp->output_reg);
 	}
 
 	DP &= ~DP_AUDIO_OUTPUT_ENABLE;
@@ -3724,9 +3716,10 @@ intel_dp_get_dpcd(struct intel_dp *intel_dp)
 		}
 	}
 
-	/* Training Pattern 3 support */
+	/* Training Pattern 3 support, both source and sink */
 	if (intel_dp->dpcd[DP_DPCD_REV] >= 0x12 &&
-	    intel_dp->dpcd[DP_MAX_LANE_COUNT] & DP_TPS3_SUPPORTED) {
+	    intel_dp->dpcd[DP_MAX_LANE_COUNT] & DP_TPS3_SUPPORTED &&
+	    (IS_HASWELL(dev_priv) || INTEL_INFO(dev_priv)->gen >= 8)) {
 		intel_dp->use_tps3 = true;
 		DRM_DEBUG_KMS("Displayport TPS3 supported\n");
 	} else
@@ -4442,6 +4435,7 @@ static void intel_dp_encoder_suspend(struct intel_encoder *intel_encoder)
 	 * vdd might still be enabled do to the delayed vdd off.
 	 * Make sure vdd is actually turned off here.
 	 */
+	cancel_delayed_work_sync(&intel_dp->panel_vdd_work);
 	pps_lock(intel_dp);
 	edp_panel_vdd_off_sync(intel_dp);
 	pps_unlock(intel_dp);
@@ -4490,6 +4484,18 @@ intel_dp_hpd_pulse(struct intel_digital_port *intel_dig_port, bool long_hpd)
 
 	if (intel_dig_port->base.type != INTEL_OUTPUT_EDP)
 		intel_dig_port->base.type = INTEL_OUTPUT_DISPLAYPORT;
+
+	if (long_hpd && intel_dig_port->base.type == INTEL_OUTPUT_EDP) {
+		/*
+		 * vdd off can generate a long pulse on eDP which
+		 * would require vdd on to handle it, and thus we
+		 * would end up in an endless cycle of
+		 * "vdd off -> long hpd -> vdd on -> detect -> vdd off -> ..."
+		 */
+		DRM_DEBUG_KMS("ignoring long hpd on eDP port %c\n",
+			      port_name(intel_dig_port->port));
+		return false;
+	}
 
 	DRM_DEBUG_KMS("got hpd irq on port %c - %s\n",
 		      port_name(intel_dig_port->port),

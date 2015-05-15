@@ -504,7 +504,7 @@ EXPORT_SYMBOL_GPL(em28xx_audio_analog_set);
 int em28xx_audio_setup(struct em28xx *dev)
 {
 	int vid1, vid2, feat, cfg;
-	u32 vid;
+	u32 vid = 0;
 	u8 i2s_samplerates;
 
 	if (dev->chip_id == CHIP_ID_EM2870 ||
@@ -1122,7 +1122,7 @@ int em28xx_suspend_extension(struct em28xx *dev)
 {
 	const struct em28xx_ops *ops = NULL;
 
-	em28xx_info("Suspending extensions");
+	em28xx_info("Suspending extensions\n");
 	mutex_lock(&em28xx_devlist_mutex);
 	list_for_each_entry(ops, &em28xx_extension_devlist, next) {
 		if (ops->suspend)
@@ -1136,7 +1136,7 @@ int em28xx_resume_extension(struct em28xx *dev)
 {
 	const struct em28xx_ops *ops = NULL;
 
-	em28xx_info("Resuming extensions");
+	em28xx_info("Resuming extensions\n");
 	mutex_lock(&em28xx_devlist_mutex);
 	list_for_each_entry(ops, &em28xx_extension_devlist, next) {
 		if (ops->resume)

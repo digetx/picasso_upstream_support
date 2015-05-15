@@ -509,6 +509,7 @@ static int ceph_tcp_connect(struct ceph_connection *con)
 
 		return ret;
 	}
+
 	con->sock = sock;
 	return 0;
 }

@@ -44,6 +44,9 @@
 
 #define BMC150_ACCEL_REG_INT_STATUS_2		0x0B
 #define BMC150_ACCEL_ANY_MOTION_MASK		0x07
+#define BMC150_ACCEL_ANY_MOTION_BIT_X		BIT(0)
+#define BMC150_ACCEL_ANY_MOTION_BIT_Y		BIT(1)
+#define BMC150_ACCEL_ANY_MOTION_BIT_Z		BIT(2)
 #define BMC150_ACCEL_ANY_MOTION_BIT_SIGN	BIT(3)
 
 #define BMC150_ACCEL_REG_PMU_LPW		0x11
@@ -92,9 +95,9 @@
 #define BMC150_ACCEL_SLOPE_THRES_MASK		0xFF
 
 /* Slope duration in terms of number of samples */
-#define BMC150_ACCEL_DEF_SLOPE_DURATION	2
+#define BMC150_ACCEL_DEF_SLOPE_DURATION		1
 /* in terms of multiples of g's/LSB, based on range */
-#define BMC150_ACCEL_DEF_SLOPE_THRESHOLD	5
+#define BMC150_ACCEL_DEF_SLOPE_THRESHOLD	1
 
 #define BMC150_ACCEL_REG_XOUT_L		0x02
 
@@ -165,14 +168,14 @@ static const struct {
 	int val;
 	int val2;
 	u8 bw_bits;
-} bmc150_accel_samp_freq_table[] = { {7, 810000, 0x08},
-				     {15, 630000, 0x09},
-				     {31, 250000, 0x0A},
-				     {62, 500000, 0x0B},
-				     {125, 0, 0x0C},
-				     {250, 0, 0x0D},
-				     {500, 0, 0x0E},
-				     {1000, 0, 0x0F} };
+} bmc150_accel_samp_freq_table[] = { {15, 620000, 0x08},
+				     {31, 260000, 0x09},
+				     {62, 500000, 0x0A},
+				     {125, 0, 0x0B},
+				     {250, 0, 0x0C},
+				     {500, 0, 0x0D},
+				     {1000, 0, 0x0E},
+				     {2000, 0, 0x0F} };
 
 static const struct {
 	int bw_bits;
@@ -536,6 +539,9 @@ static int bmc150_accel_set_power_state(struct bmc150_accel_data *data, bool on)
 	if (ret < 0) {
 		dev_err(&data->client->dev,
 			"Failed: bmc150_accel_set_power_state for %d\n", on);
+		if (on)
+			pm_runtime_put_noidle(&data->client->dev);
+
 		return ret;
 	}
 
@@ -811,6 +817,7 @@ static int bmc150_accel_write_event_config(struct iio_dev *indio_dev,
 
 	ret =  bmc150_accel_setup_any_motion_interrupt(data, state);
 	if (ret < 0) {
+		bmc150_accel_set_power_state(data, false);
 		mutex_unlock(&data->mutex);
 		return ret;
 	}
@@ -833,7 +840,7 @@ static int bmc150_accel_validate_trigger(struct iio_dev *indio_dev,
 }
 
 static IIO_CONST_ATTR_SAMP_FREQ_AVAIL(
-		"7.810000 15.630000 31.250000 62.500000 125 250 500 1000");
+		"15.620000 31.260000 62.50000 125 250 500 1000 2000");
 
 static struct attribute *bmc150_accel_attributes[] = {
 	&iio_const_attr_sampling_frequency_available.dev_attr.attr,
@@ -846,7 +853,7 @@ static const struct attribute_group bmc150_accel_attrs_group = {
 
 static const struct iio_event_spec bmc150_accel_event = {
 		.type = IIO_EV_TYPE_ROC,
-		.dir = IIO_EV_DIR_RISING | IIO_EV_DIR_FALLING,
+		.dir = IIO_EV_DIR_EITHER,
 		.mask_separate = BIT(IIO_EV_INFO_VALUE) |
 				 BIT(IIO_EV_INFO_ENABLE) |
 				 BIT(IIO_EV_INFO_PERIOD)
@@ -1054,6 +1061,7 @@ static int bmc150_accel_data_rdy_trigger_set_state(struct iio_trigger *trig,
 	else
 		ret = bmc150_accel_setup_new_data_interrupt(data, state);
 	if (ret < 0) {
+		bmc150_accel_set_power_state(data, false);
 		mutex_unlock(&data->mutex);
 		return ret;
 	}
@@ -1092,12 +1100,26 @@ static irqreturn_t bmc150_accel_event_handler(int irq, void *private)
 	else
 		dir = IIO_EV_DIR_RISING;
 
-	if (ret & BMC150_ACCEL_ANY_MOTION_MASK)
+	if (ret & BMC150_ACCEL_ANY_MOTION_BIT_X)
 		iio_push_event(indio_dev, IIO_MOD_EVENT_CODE(IIO_ACCEL,
 							0,
-							IIO_MOD_X_OR_Y_OR_Z,
+							IIO_MOD_X,
 							IIO_EV_TYPE_ROC,
-							IIO_EV_DIR_EITHER),
+							dir),
+							data->timestamp);
+	if (ret & BMC150_ACCEL_ANY_MOTION_BIT_Y)
+		iio_push_event(indio_dev, IIO_MOD_EVENT_CODE(IIO_ACCEL,
+							0,
+							IIO_MOD_Y,
+							IIO_EV_TYPE_ROC,
+							dir),
+							data->timestamp);
+	if (ret & BMC150_ACCEL_ANY_MOTION_BIT_Z)
+		iio_push_event(indio_dev, IIO_MOD_EVENT_CODE(IIO_ACCEL,
+							0,
+							IIO_MOD_Z,
+							IIO_EV_TYPE_ROC,
+							dir),
 							data->timestamp);
 ack_intr_status:
 	if (!data->dready_trigger_on)
@@ -1354,10 +1376,14 @@ static int bmc150_accel_runtime_suspend(struct device *dev)
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata(to_i2c_client(dev));
 	struct bmc150_accel_data *data = iio_priv(indio_dev);
+	int ret;
 
 	dev_dbg(&data->client->dev,  __func__);
+	ret = bmc150_accel_set_mode(data, BMC150_ACCEL_SLEEP_MODE_SUSPEND, 0);
+	if (ret < 0)
+		return -EAGAIN;
 
-	return bmc150_accel_set_mode(data, BMC150_ACCEL_SLEEP_MODE_SUSPEND, 0);
+	return 0;
 }
 
 static int bmc150_accel_runtime_resume(struct device *dev)

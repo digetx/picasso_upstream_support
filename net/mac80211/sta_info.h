@@ -170,6 +170,7 @@ struct tid_ampdu_tx {
  * @reorder_lock: serializes access to reorder buffer, see below.
  * @auto_seq: used for offloaded BA sessions to automatically pick head_seq_and
  *	and ssn.
+ * @removed: this session is removed (but might have been found due to RCU)
  *
  * This structure's lifetime is managed by RCU, assignments to
  * the array holding it must hold the aggregation mutex.
@@ -194,6 +195,7 @@ struct tid_ampdu_rx {
 	u16 timeout;
 	u8 dialog_token;
 	bool auto_seq;
+	bool removed;
 };
 
 /**
@@ -336,6 +338,7 @@ struct ieee80211_tx_latency_stat {
  * @known_smps_mode: the smps_mode the client thinks we are in. Relevant for
  *	AP only.
  * @cipher_scheme: optional cipher scheme for this station
+ * @last_tdls_pkt_time: holds the time in jiffies of last TDLS pkt ACKed
  */
 struct sta_info {
 	/* General information, mostly static */

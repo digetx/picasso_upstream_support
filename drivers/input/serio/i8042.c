@@ -39,7 +39,7 @@ static bool i8042_noaux;
 module_param_named(noaux, i8042_noaux, bool, 0);
 MODULE_PARM_DESC(noaux, "Do not probe or use AUX (mouse) port.");
 
-static bool i8042_nomux = true;
+static bool i8042_nomux;
 module_param_named(nomux, i8042_nomux, bool, 0);
 MODULE_PARM_DESC(nomux, "Do not check whether an active multiplexing controller is present.");
 
@@ -66,6 +66,10 @@ MODULE_PARM_DESC(noloop, "Disable the AUX Loopback command while probing for the
 static bool i8042_notimeout;
 module_param_named(notimeout, i8042_notimeout, bool, 0);
 MODULE_PARM_DESC(notimeout, "Ignore timeouts signalled by i8042");
+
+static bool i8042_kbdreset;
+module_param_named(kbdreset, i8042_kbdreset, bool, 0);
+MODULE_PARM_DESC(kbdreset, "Reset device connected to KBD port");
 
 #ifdef CONFIG_X86
 static bool i8042_dritek;
@@ -788,6 +792,16 @@ static int __init i8042_check_aux(void)
 
 	if (i8042_toggle_aux(true))
 		return -1;
+
+/*
+ * Reset keyboard (needed on some laptops to successfully detect
+ * touchpad, e.g., some Gigabyte laptop models with Elantech
+ * touchpads).
+ */
+	if (i8042_kbdreset) {
+		pr_warn("Attempting to reset device connected to KBD port\n");
+		i8042_kbd_write(NULL, (unsigned char) 0xff);
+	}
 
 /*
  * Test AUX IRQ delivery to make sure BIOS did not grab the IRQ and

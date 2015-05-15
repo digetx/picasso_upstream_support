@@ -1630,6 +1630,7 @@ struct btrfs_root *btrfs_get_fs_root(struct btrfs_fs_info *fs_info,
 				     bool check_ref)
 {
 	struct btrfs_root *root;
+	struct btrfs_path *path;
 	int ret;
 
 	if (location->objectid == BTRFS_ROOT_TREE_OBJECTID)
@@ -1669,8 +1670,14 @@ again:
 	if (ret)
 		goto fail;
 
-	ret = btrfs_find_item(fs_info->tree_root, NULL, BTRFS_ORPHAN_OBJECTID,
+	path = btrfs_alloc_path();
+	if (!path) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	ret = btrfs_find_item(fs_info->tree_root, path, BTRFS_ORPHAN_OBJECTID,
 			location->objectid, BTRFS_ORPHAN_ITEM_KEY, NULL);
+	btrfs_free_path(path);
 	if (ret < 0)
 		goto fail;
 	if (ret == 0)
@@ -2496,7 +2503,7 @@ int open_ctree(struct super_block *sb,
 		features |= BTRFS_FEATURE_INCOMPAT_COMPRESS_LZO;
 
 	if (features & BTRFS_FEATURE_INCOMPAT_SKINNY_METADATA)
-		printk(KERN_ERR "BTRFS: has skinny extents\n");
+		printk(KERN_INFO "BTRFS: has skinny extents\n");
 
 	/*
 	 * flag our filesystem as having big metadata blocks if
@@ -3817,19 +3824,19 @@ static int btrfs_check_super_valid(struct btrfs_fs_info *fs_info,
 	struct btrfs_super_block *sb = fs_info->super_copy;
 	int ret = 0;
 
-	if (sb->root_level > BTRFS_MAX_LEVEL) {
-		printk(KERN_ERR "BTRFS: tree_root level too big: %d > %d\n",
-				sb->root_level, BTRFS_MAX_LEVEL);
+	if (btrfs_super_root_level(sb) >= BTRFS_MAX_LEVEL) {
+		printk(KERN_ERR "BTRFS: tree_root level too big: %d >= %d\n",
+				btrfs_super_root_level(sb), BTRFS_MAX_LEVEL);
 		ret = -EINVAL;
 	}
-	if (sb->chunk_root_level > BTRFS_MAX_LEVEL) {
-		printk(KERN_ERR "BTRFS: chunk_root level too big: %d > %d\n",
-				sb->chunk_root_level, BTRFS_MAX_LEVEL);
+	if (btrfs_super_chunk_root_level(sb) >= BTRFS_MAX_LEVEL) {
+		printk(KERN_ERR "BTRFS: chunk_root level too big: %d >= %d\n",
+				btrfs_super_chunk_root_level(sb), BTRFS_MAX_LEVEL);
 		ret = -EINVAL;
 	}
-	if (sb->log_root_level > BTRFS_MAX_LEVEL) {
-		printk(KERN_ERR "BTRFS: log_root level too big: %d > %d\n",
-				sb->log_root_level, BTRFS_MAX_LEVEL);
+	if (btrfs_super_log_root_level(sb) >= BTRFS_MAX_LEVEL) {
+		printk(KERN_ERR "BTRFS: log_root level too big: %d >= %d\n",
+				btrfs_super_log_root_level(sb), BTRFS_MAX_LEVEL);
 		ret = -EINVAL;
 	}
 
@@ -3837,15 +3844,15 @@ static int btrfs_check_super_valid(struct btrfs_fs_info *fs_info,
 	 * The common minimum, we don't know if we can trust the nodesize/sectorsize
 	 * items yet, they'll be verified later. Issue just a warning.
 	 */
-	if (!IS_ALIGNED(sb->root, 4096))
+	if (!IS_ALIGNED(btrfs_super_root(sb), 4096))
 		printk(KERN_WARNING "BTRFS: tree_root block unaligned: %llu\n",
 				sb->root);
-	if (!IS_ALIGNED(sb->chunk_root, 4096))
+	if (!IS_ALIGNED(btrfs_super_chunk_root(sb), 4096))
 		printk(KERN_WARNING "BTRFS: tree_root block unaligned: %llu\n",
 				sb->chunk_root);
-	if (!IS_ALIGNED(sb->log_root, 4096))
+	if (!IS_ALIGNED(btrfs_super_log_root(sb), 4096))
 		printk(KERN_WARNING "BTRFS: tree_root block unaligned: %llu\n",
-				sb->log_root);
+				btrfs_super_log_root(sb));
 
 	if (memcmp(fs_info->fsid, sb->dev_item.fsid, BTRFS_UUID_SIZE) != 0) {
 		printk(KERN_ERR "BTRFS: dev_item UUID does not match fsid: %pU != %pU\n",
@@ -3857,13 +3864,13 @@ static int btrfs_check_super_valid(struct btrfs_fs_info *fs_info,
 	 * Hint to catch really bogus numbers, bitflips or so, more exact checks are
 	 * done later
 	 */
-	if (sb->num_devices > (1UL << 31))
+	if (btrfs_super_num_devices(sb) > (1UL << 31))
 		printk(KERN_WARNING "BTRFS: suspicious number of devices: %llu\n",
-				sb->num_devices);
+				btrfs_super_num_devices(sb));
 
-	if (sb->bytenr != BTRFS_SUPER_INFO_OFFSET) {
+	if (btrfs_super_bytenr(sb) != BTRFS_SUPER_INFO_OFFSET) {
 		printk(KERN_ERR "BTRFS: super offset mismatch %llu != %u\n",
-				sb->bytenr, BTRFS_SUPER_INFO_OFFSET);
+				btrfs_super_bytenr(sb), BTRFS_SUPER_INFO_OFFSET);
 		ret = -EINVAL;
 	}
 
@@ -3871,14 +3878,15 @@ static int btrfs_check_super_valid(struct btrfs_fs_info *fs_info,
 	 * The generation is a global counter, we'll trust it more than the others
 	 * but it's still possible that it's the one that's wrong.
 	 */
-	if (sb->generation < sb->chunk_root_generation)
+	if (btrfs_super_generation(sb) < btrfs_super_chunk_root_generation(sb))
 		printk(KERN_WARNING
 			"BTRFS: suspicious: generation < chunk_root_generation: %llu < %llu\n",
-			sb->generation, sb->chunk_root_generation);
-	if (sb->generation < sb->cache_generation && sb->cache_generation != (u64)-1)
+			btrfs_super_generation(sb), btrfs_super_chunk_root_generation(sb));
+	if (btrfs_super_generation(sb) < btrfs_super_cache_generation(sb)
+	    && btrfs_super_cache_generation(sb) != (u64)-1)
 		printk(KERN_WARNING
 			"BTRFS: suspicious: generation < cache_generation: %llu < %llu\n",
-			sb->generation, sb->cache_generation);
+			btrfs_super_generation(sb), btrfs_super_cache_generation(sb));
 
 	return ret;
 }
@@ -4105,12 +4113,6 @@ again:
 		if (ret)
 			break;
 
-		/* opt_discard */
-		if (btrfs_test_opt(root, DISCARD))
-			ret = btrfs_error_discard_extent(root, start,
-							 end + 1 - start,
-							 NULL);
-
 		clear_extent_dirty(unpin, start, end, GFP_NOFS);
 		btrfs_error_unpin_extent_range(root, start, end);
 		cond_resched();
@@ -4128,6 +4130,25 @@ again:
 	return 0;
 }
 
+static void btrfs_free_pending_ordered(struct btrfs_transaction *cur_trans,
+				       struct btrfs_fs_info *fs_info)
+{
+	struct btrfs_ordered_extent *ordered;
+
+	spin_lock(&fs_info->trans_lock);
+	while (!list_empty(&cur_trans->pending_ordered)) {
+		ordered = list_first_entry(&cur_trans->pending_ordered,
+					   struct btrfs_ordered_extent,
+					   trans_list);
+		list_del_init(&ordered->trans_list);
+		spin_unlock(&fs_info->trans_lock);
+
+		btrfs_put_ordered_extent(ordered);
+		spin_lock(&fs_info->trans_lock);
+	}
+	spin_unlock(&fs_info->trans_lock);
+}
+
 void btrfs_cleanup_one_transaction(struct btrfs_transaction *cur_trans,
 				   struct btrfs_root *root)
 {
@@ -4139,6 +4160,7 @@ void btrfs_cleanup_one_transaction(struct btrfs_transaction *cur_trans,
 	cur_trans->state = TRANS_STATE_UNBLOCKED;
 	wake_up(&root->fs_info->transaction_wait);
 
+	btrfs_free_pending_ordered(cur_trans, root->fs_info);
 	btrfs_destroy_delayed_inodes(root);
 	btrfs_assert_delayed_root_empty(root);
 

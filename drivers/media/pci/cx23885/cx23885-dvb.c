@@ -1586,6 +1586,17 @@ static int dvb_register(struct cx23885_tsport *port)
 			break;
 		}
 		break;
+	case CX23885_BOARD_HAUPPAUGE_STARBURST:
+		i2c_bus = &dev->i2c_bus[0];
+		fe0->dvb.frontend = dvb_attach(tda10071_attach,
+						&hauppauge_tda10071_config,
+						&i2c_bus->i2c_adap);
+		if (fe0->dvb.frontend != NULL) {
+			dvb_attach(a8293_attach, fe0->dvb.frontend,
+				   &i2c_bus->i2c_adap,
+				   &hauppauge_a8293_config);
+		}
+		break;
 	case CX23885_BOARD_DVBSKY_T9580:
 		i2c_bus = &dev->i2c_bus[0];
 		i2c_bus2 = &dev->i2c_bus[1];
@@ -1600,6 +1611,7 @@ static int dvb_register(struct cx23885_tsport *port)
 				break;
 
 			/* attach tuner */
+			memset(&m88ts2022_config, 0, sizeof(m88ts2022_config));
 			m88ts2022_config.fe = fe0->dvb.frontend;
 			m88ts2022_config.clock = 27000000;
 			memset(&info, 0, sizeof(struct i2c_board_info));
@@ -1635,6 +1647,7 @@ static int dvb_register(struct cx23885_tsport *port)
 		/* port c - terrestrial/cable */
 		case 2:
 			/* attach frontend */
+			memset(&si2168_config, 0, sizeof(si2168_config));
 			si2168_config.i2c_adapter = &adapter;
 			si2168_config.fe = &fe0->dvb.frontend;
 			si2168_config.ts_mode = SI2168_TS_SERIAL;
@@ -1654,6 +1667,7 @@ static int dvb_register(struct cx23885_tsport *port)
 			port->i2c_client_demod = client_demod;
 
 			/* attach tuner */
+			memset(&si2157_config, 0, sizeof(si2157_config));
 			si2157_config.fe = fe0->dvb.frontend;
 			memset(&info, 0, sizeof(struct i2c_board_info));
 			strlcpy(info.type, "si2157", I2C_NAME_SIZE);
