@@ -23,6 +23,8 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 
+#include <../drivers/staging/tegra/include/linux/nvhost.h>
+
 const struct of_device_id of_default_bus_match_table[] = {
 	{ .compatible = "simple-bus", },
 #ifdef CONFIG_ARM_AMBA
@@ -313,6 +315,42 @@ static const struct of_dev_auxdata *of_dev_lookup(const struct of_dev_auxdata *l
 }
 
 /**
+ * Assume that all child devices belongs to nvhost
+ */
+static int of_nvhost_bus_create(struct device_node *node,
+				const struct of_dev_auxdata *lookup)
+{
+	const struct of_dev_auxdata *auxdata;
+	struct device_node *child;
+	const char *bus_id = NULL;
+	void *platform_data = NULL;
+	int rc;
+
+	if (!of_device_is_available(node))
+		return -ENODEV;
+
+	auxdata = of_dev_lookup(lookup, node);
+	if (auxdata) {
+		bus_id = auxdata->name;
+		platform_data = auxdata->platform_data;
+	}
+
+	pr_debug("   nvhost create host: %s\n", node->name);
+	rc = of_nvhost_device_create(node, bus_id, platform_data);
+	if (rc)
+		return rc;
+
+	for_each_child_of_node(node, child) {
+		pr_debug("   nvhost create child: %s\n", child->full_name);
+		rc = of_nvhost_bus_create(child, lookup);
+		if (rc)
+			of_node_put(child);
+	}
+
+	return rc;
+}
+
+/**
  * of_platform_bus_create() - Create a device for a node and its children.
  * @bus: device node of the bus to instantiate
  * @matches: match table for bus nodes
@@ -354,6 +392,11 @@ static int of_platform_bus_create(struct device_node *bus,
 		 * device tree files.
 		 */
 		of_amba_device_create(bus, bus_id, platform_data, parent);
+		return 0;
+	}
+
+	if (of_device_is_compatible(bus, "nvhost-bus")) {
+		of_nvhost_bus_create(bus, tegra20_auxdata_lookup);
 		return 0;
 	}
 
