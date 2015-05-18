@@ -1,5 +1,7 @@
 # Makefile for staging directory
 
+obj-$(CONFIG_TEGRA_DOWNSTREAM)	+= tegra/
+
 obj-$(CONFIG_A500)		+= a500/
 
 obj-y				+= media/
