@@ -109,4 +109,6 @@ source "drivers/staging/fbtft/Kconfig"
 
 source "drivers/staging/i2o/Kconfig"
 
+source "drivers/staging/tegra/Kconfig"
+
 endif # STAGING
