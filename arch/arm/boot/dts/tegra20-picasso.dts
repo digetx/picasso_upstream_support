@@ -353,7 +353,7 @@
 		clock-frequency = <400000>;
 
 		touchscreen@4c {
-			compatible = "atmel,maxtouch";
+			compatible = "atmel,maxtouch", "atmel,mxt-ts-a500";
 			reg = <0x4c>;
 			interrupt-parent = <&gpio>;
 			interrupts = <TEGRA_GPIO(V, 6) IRQ_TYPE_EDGE_FALLING>;
