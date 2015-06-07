@@ -425,8 +425,8 @@ static void tegra_plane_reset(struct drm_plane *plane)
 {
 	struct tegra_plane_state *state;
 
-	if (plane->state && plane->state->fb)
-		drm_framebuffer_unreference(plane->state->fb);
+	if (plane->state)
+		__drm_atomic_helper_plane_destroy_state(plane, plane->state);
 
 	kfree(plane->state);
 	plane->state = NULL;
@@ -443,12 +443,14 @@ static struct drm_plane_state *tegra_plane_atomic_duplicate_state(struct drm_pla
 	struct tegra_plane_state *state = to_tegra_plane_state(plane->state);
 	struct tegra_plane_state *copy;
 
-	copy = kmemdup(state, sizeof(*state), GFP_KERNEL);
+	copy = kmalloc(sizeof(*copy), GFP_KERNEL);
 	if (!copy)
 		return NULL;
 
-	if (copy->base.fb)
-		drm_framebuffer_reference(copy->base.fb);
+	__drm_atomic_helper_plane_duplicate_state(plane, &copy->base);
+	copy->tiling = state->tiling;
+	copy->format = state->format;
+	copy->swap = state->swap;
 
 	return &copy->base;
 }
@@ -456,9 +458,7 @@ static struct drm_plane_state *tegra_plane_atomic_duplicate_state(struct drm_pla
 static void tegra_plane_atomic_destroy_state(struct drm_plane *plane,
 					     struct drm_plane_state *state)
 {
-	if (state->fb)
-		drm_framebuffer_unreference(state->fb);
-
+	__drm_atomic_helper_plane_destroy_state(plane, state);
 	kfree(state);
 }
 
@@ -993,12 +993,17 @@ static void tegra_crtc_reset(struct drm_crtc *crtc)
 {
 	struct tegra_dc_state *state;
 
+	if (crtc->state)
+		__drm_atomic_helper_crtc_destroy_state(crtc, crtc->state);
+
 	kfree(crtc->state);
 	crtc->state = NULL;
 
 	state = kzalloc(sizeof(*state), GFP_KERNEL);
-	if (state)
+	if (state) {
 		crtc->state = &state->base;
+		crtc->state->crtc = crtc;
+	}
 }
 
 static struct drm_crtc_state *
@@ -1007,13 +1012,15 @@ tegra_crtc_atomic_duplicate_state(struct drm_crtc *crtc)
 	struct tegra_dc_state *state = to_dc_state(crtc->state);
 	struct tegra_dc_state *copy;
 
-	copy = kmemdup(state, sizeof(*state), GFP_KERNEL);
+	copy = kmalloc(sizeof(*copy), GFP_KERNEL);
 	if (!copy)
 		return NULL;
 
-	copy->base.mode_changed = false;
-	copy->base.planes_changed = false;
-	copy->base.event = NULL;
+	__drm_atomic_helper_crtc_duplicate_state(crtc, &copy->base);
+	copy->clk = state->clk;
+	copy->pclk = state->pclk;
+	copy->div = state->div;
+	copy->planes = state->planes;
 
 	return &copy->base;
 }
@@ -1021,6 +1028,7 @@ tegra_crtc_atomic_duplicate_state(struct drm_crtc *crtc)
 static void tegra_crtc_atomic_destroy_state(struct drm_crtc *crtc,
 					    struct drm_crtc_state *state)
 {
+	__drm_atomic_helper_crtc_destroy_state(crtc, state);
 	kfree(state);
 }
 
@@ -1032,6 +1040,123 @@ static const struct drm_crtc_funcs tegra_crtc_funcs = {
 	.atomic_duplicate_state = tegra_crtc_atomic_duplicate_state,
 	.atomic_destroy_state = tegra_crtc_atomic_destroy_state,
 };
+
+static bool tegra_crtc_mode_fixup(struct drm_crtc *crtc,
+				  const struct drm_display_mode *mode,
+				  struct drm_display_mode *adjusted)
+{
+	return true;
+}
+
+static int tegra_dc_set_timings(struct tegra_dc *dc,
+				struct drm_display_mode *mode)
+{
+	unsigned int h_ref_to_sync = 1;
+	unsigned int v_ref_to_sync = 1;
+	unsigned long value;
+
+	tegra_dc_writel(dc, 0x0, DC_DISP_DISP_TIMING_OPTIONS);
+
+	value = (v_ref_to_sync << 16) | h_ref_to_sync;
+	tegra_dc_writel(dc, value, DC_DISP_REF_TO_SYNC);
+
+	value = ((mode->vsync_end - mode->vsync_start) << 16) |
+		((mode->hsync_end - mode->hsync_start) <<  0);
+	tegra_dc_writel(dc, value, DC_DISP_SYNC_WIDTH);
+
+	value = ((mode->vtotal - mode->vsync_end) << 16) |
+		((mode->htotal - mode->hsync_end) <<  0);
+	tegra_dc_writel(dc, value, DC_DISP_BACK_PORCH);
+
+	value = ((mode->vsync_start - mode->vdisplay) << 16) |
+		((mode->hsync_start - mode->hdisplay) <<  0);
+	tegra_dc_writel(dc, value, DC_DISP_FRONT_PORCH);
+
+	value = (mode->vdisplay << 16) | mode->hdisplay;
+	tegra_dc_writel(dc, value, DC_DISP_ACTIVE);
+
+	return 0;
+}
+
+/**
+ * tegra_dc_state_setup_clock - check clock settings and store them in atomic
+ *     state
+ * @dc: display controller
+ * @crtc_state: CRTC atomic state
+ * @clk: parent clock for display controller
+ * @pclk: pixel clock
+ * @div: shift clock divider
+ *
+ * Returns:
+ * 0 on success or a negative error-code on failure.
+ */
+int tegra_dc_state_setup_clock(struct tegra_dc *dc,
+			       struct drm_crtc_state *crtc_state,
+			       struct clk *clk, unsigned long pclk,
+			       unsigned int div)
+{
+	struct tegra_dc_state *state = to_dc_state(crtc_state);
+
+	state->clk = clk;
+	state->pclk = pclk;
+	state->div = div;
+
+	return 0;
+}
+
+static void tegra_dc_commit_state(struct tegra_dc *dc,
+				  struct tegra_dc_state *state)
+{
+	u32 value;
+	int err;
+
+	err = clk_set_parent(dc->clk, state->clk);
+	if (err < 0)
+		dev_err(dc->dev, "failed to set parent clock: %d\n", err);
+
+	/*
+	 * Outputs may not want to change the parent clock rate. This is only
+	 * relevant to Tegra20 where only a single display PLL is available.
+	 * Since that PLL would typically be used for HDMI, an internal LVDS
+	 * panel would need to be driven by some other clock such as PLL_P
+	 * which is shared with other peripherals. Changing the clock rate
+	 * should therefore be avoided.
+	 */
+	if (state->pclk > 0) {
+		err = clk_set_rate(state->clk, state->pclk);
+		if (err < 0)
+			dev_err(dc->dev,
+				"failed to set clock rate to %lu Hz\n",
+				state->pclk);
+	}
+
+	DRM_DEBUG_KMS("rate: %lu, div: %u\n", clk_get_rate(dc->clk),
+		      state->div);
+	DRM_DEBUG_KMS("pclk: %lu\n", state->pclk);
+
+	value = SHIFT_CLK_DIVIDER(state->div) | PIXEL_CLK_DIVIDER_PCD1;
+	tegra_dc_writel(dc, value, DC_DISP_DISP_CLOCK_CONTROL);
+}
+
+static void tegra_crtc_mode_set_nofb(struct drm_crtc *crtc)
+{
+	struct drm_display_mode *mode = &crtc->state->adjusted_mode;
+	struct tegra_dc_state *state = to_dc_state(crtc->state);
+	struct tegra_dc *dc = to_tegra_dc(crtc);
+	u32 value;
+
+	tegra_dc_commit_state(dc, state);
+
+	/* program display mode */
+	tegra_dc_set_timings(dc, mode);
+
+	/* interlacing isn't supported yet, so disable it */
+	if (dc->soc->supports_interlacing) {
+		value = tegra_dc_readl(dc, DC_DISP_INTERLACE_CONTROL);
+		value &= ~INTERLACE_ENABLE;
+		tegra_dc_writel(dc, value, DC_DISP_INTERLACE_CONTROL);
+	}
+}
 
 static void tegra_dc_stop(struct tegra_dc *dc)
 {
@@ -1110,132 +1235,10 @@ static void tegra_crtc_disable(struct drm_crtc *crtc)
 	drm_crtc_vblank_off(crtc);
 }
 
-static bool tegra_crtc_mode_fixup(struct drm_crtc *crtc,
-				  const struct drm_display_mode *mode,
-				  struct drm_display_mode *adjusted)
+static void tegra_crtc_enable(struct drm_crtc *crtc)
 {
-	return true;
-}
-
-static int tegra_dc_set_timings(struct tegra_dc *dc,
-				struct drm_display_mode *mode)
-{
-	unsigned int h_ref_to_sync = 1;
-	unsigned int v_ref_to_sync = 1;
-	unsigned long value;
-
-	tegra_dc_writel(dc, 0x0, DC_DISP_DISP_TIMING_OPTIONS);
-
-	value = (v_ref_to_sync << 16) | h_ref_to_sync;
-	tegra_dc_writel(dc, value, DC_DISP_REF_TO_SYNC);
-
-	value = ((mode->vsync_end - mode->vsync_start) << 16) |
-		((mode->hsync_end - mode->hsync_start) <<  0);
-	tegra_dc_writel(dc, value, DC_DISP_SYNC_WIDTH);
-
-	value = ((mode->vtotal - mode->vsync_end) << 16) |
-		((mode->htotal - mode->hsync_end) <<  0);
-	tegra_dc_writel(dc, value, DC_DISP_BACK_PORCH);
-
-	value = ((mode->vsync_start - mode->vdisplay) << 16) |
-		((mode->hsync_start - mode->hdisplay) <<  0);
-	tegra_dc_writel(dc, value, DC_DISP_FRONT_PORCH);
-
-	value = (mode->vdisplay << 16) | mode->hdisplay;
-	tegra_dc_writel(dc, value, DC_DISP_ACTIVE);
-
-	return 0;
-}
-
-int tegra_dc_setup_clock(struct tegra_dc *dc, struct clk *parent,
-			 unsigned long pclk, unsigned int div)
-{
-	u32 value;
-	int err;
-
-	err = clk_set_parent(dc->clk, parent);
-	if (err < 0) {
-		dev_err(dc->dev, "failed to set parent clock: %d\n", err);
-		return err;
-	}
-
-	DRM_DEBUG_KMS("rate: %lu, div: %u\n", clk_get_rate(dc->clk), div);
-
-	value = SHIFT_CLK_DIVIDER(div) | PIXEL_CLK_DIVIDER_PCD1;
-	tegra_dc_writel(dc, value, DC_DISP_DISP_CLOCK_CONTROL);
-
-	return 0;
-}
-
-int tegra_dc_state_setup_clock(struct tegra_dc *dc,
-			       struct drm_crtc_state *crtc_state,
-			       struct clk *clk, unsigned long pclk,
-			       unsigned int div)
-{
-	struct tegra_dc_state *state = to_dc_state(crtc_state);
-
-	state->clk = clk;
-	state->pclk = pclk;
-	state->div = div;
-
-	return 0;
-}
-
-static void tegra_dc_commit_state(struct tegra_dc *dc,
-				  struct tegra_dc_state *state)
-{
-	u32 value;
-	int err;
-
-	err = clk_set_parent(dc->clk, state->clk);
-	if (err < 0)
-		dev_err(dc->dev, "failed to set parent clock: %d\n", err);
-
-	/*
-	 * Outputs may not want to change the parent clock rate. This is only
-	 * relevant to Tegra20 where only a single display PLL is available.
-	 * Since that PLL would typically be used for HDMI, an internal LVDS
-	 * panel would need to be driven by some other clock such as PLL_P
-	 * which is shared with other peripherals. Changing the clock rate
-	 * should therefore be avoided.
-	 */
-	if (state->pclk > 0) {
-		err = clk_set_rate(state->clk, state->pclk);
-		if (err < 0)
-			dev_err(dc->dev,
-				"failed to set clock rate to %lu Hz\n",
-				state->pclk);
-	}
-
-	DRM_DEBUG_KMS("rate: %lu, div: %u\n", clk_get_rate(dc->clk),
-		      state->div);
-	DRM_DEBUG_KMS("pclk: %lu\n", state->pclk);
-
-	value = SHIFT_CLK_DIVIDER(state->div) | PIXEL_CLK_DIVIDER_PCD1;
-	tegra_dc_writel(dc, value, DC_DISP_DISP_CLOCK_CONTROL);
-}
-
-static void tegra_crtc_mode_set_nofb(struct drm_crtc *crtc)
-{
-	struct drm_display_mode *mode = &crtc->state->adjusted_mode;
-	struct tegra_dc_state *state = to_dc_state(crtc->state);
 	struct tegra_dc *dc = to_tegra_dc(crtc);
 	u32 value;
-
-	tegra_dc_commit_state(dc, state);
-
-	/* program display mode */
-	tegra_dc_set_timings(dc, mode);
-
-	if (dc->soc->supports_border_color)
-		tegra_dc_writel(dc, 0, DC_DISP_BORDER_COLOR);
-
-	/* interlacing isn't supported yet, so disable it */
-	if (dc->soc->supports_interlacing) {
-		value = tegra_dc_readl(dc, DC_DISP_INTERLACE_CONTROL);
-		value &= ~INTERLACE_ENABLE;
-		tegra_dc_writel(dc, value, DC_DISP_INTERLACE_CONTROL);
-	}
 
 	value = tegra_dc_readl(dc, DC_CMD_DISPLAY_COMMAND);
 	value &= ~DISP_CTRL_MODE_MASK;
@@ -1247,52 +1250,8 @@ static void tegra_crtc_mode_set_nofb(struct drm_crtc *crtc)
 		 PW4_ENABLE | PM0_ENABLE | PM1_ENABLE;
 	tegra_dc_writel(dc, value, DC_CMD_DISPLAY_POWER_CONTROL);
 
-	tegra_dc_commit(dc);
-}
-
-static void tegra_crtc_prepare(struct drm_crtc *crtc)
-{
-	struct tegra_dc *dc = to_tegra_dc(crtc);
-	unsigned int syncpt;
-	unsigned long value;
-
-	drm_crtc_vblank_off(crtc);
-
-	if (dc->pipe)
-		syncpt = SYNCPT_VBLANK1;
-	else
-		syncpt = SYNCPT_VBLANK0;
-
-	/* initialize display controller */
-	tegra_dc_writel(dc, 0x00000100, DC_CMD_GENERAL_INCR_SYNCPT_CNTRL);
-	tegra_dc_writel(dc, 0x100 | syncpt, DC_CMD_CONT_SYNCPT_VSYNC);
-
-	value = WIN_A_UF_INT | WIN_B_UF_INT | WIN_C_UF_INT | WIN_A_OF_INT;
-	tegra_dc_writel(dc, value, DC_CMD_INT_TYPE);
-
-	value = WIN_A_UF_INT | WIN_B_UF_INT | WIN_C_UF_INT |
-		WIN_A_OF_INT | WIN_B_OF_INT | WIN_C_OF_INT;
-	tegra_dc_writel(dc, value, DC_CMD_INT_POLARITY);
-
-	/* initialize timer */
-	value = CURSOR_THRESHOLD(0) | WINDOW_A_THRESHOLD(0x20) |
-		WINDOW_B_THRESHOLD(0x20) | WINDOW_C_THRESHOLD(0x20);
-	tegra_dc_writel(dc, value, DC_DISP_DISP_MEM_HIGH_PRIORITY);
-
-	value = CURSOR_THRESHOLD(0) | WINDOW_A_THRESHOLD(1) |
-		WINDOW_B_THRESHOLD(1) | WINDOW_C_THRESHOLD(1);
-	tegra_dc_writel(dc, value, DC_DISP_DISP_MEM_HIGH_PRIORITY_TIMER);
-
-	value = VBLANK_INT | WIN_A_UF_INT | WIN_B_UF_INT | WIN_C_UF_INT;
-	tegra_dc_writel(dc, value, DC_CMD_INT_ENABLE);
-
-	value = WIN_A_UF_INT | WIN_B_UF_INT | WIN_C_UF_INT;
-	tegra_dc_writel(dc, value, DC_CMD_INT_MASK);
-}
-
-static void tegra_crtc_commit(struct drm_crtc *crtc)
-{
 	drm_crtc_vblank_on(crtc);
+	tegra_dc_commit(dc);
 }
 
 static int tegra_crtc_atomic_check(struct drm_crtc *crtc,
@@ -1325,13 +1284,10 @@ static void tegra_crtc_atomic_flush(struct drm_crtc *crtc)
 }
 
 static const struct drm_crtc_helper_funcs tegra_crtc_helper_funcs = {
-	.disable = tegra_crtc_disable,
 	.mode_fixup = tegra_crtc_mode_fixup,
-	.mode_set = drm_helper_crtc_mode_set,
 	.mode_set_nofb = tegra_crtc_mode_set_nofb,
-	.mode_set_base = drm_helper_crtc_mode_set_base,
-	.prepare = tegra_crtc_prepare,
-	.commit = tegra_crtc_commit,
+	.disable = tegra_crtc_disable,
+	.enable = tegra_crtc_enable,
 	.atomic_check = tegra_crtc_atomic_check,
 	.atomic_begin = tegra_crtc_atomic_begin,
 	.atomic_flush = tegra_crtc_atomic_flush,
@@ -1664,6 +1620,8 @@ static int tegra_dc_init(struct host1x_client *client)
 	struct tegra_drm *tegra = drm->dev_private;
 	struct drm_plane *primary = NULL;
 	struct drm_plane *cursor = NULL;
+	unsigned int syncpt;
+	u32 value;
 	int err;
 
 	if (tegra->domain) {
@@ -1729,6 +1687,40 @@ static int tegra_dc_init(struct host1x_client *client)
 			err);
 		goto cleanup;
 	}
+
+	/* initialize display controller */
+	if (dc->pipe)
+		syncpt = SYNCPT_VBLANK1;
+	else
+		syncpt = SYNCPT_VBLANK0;
+
+	tegra_dc_writel(dc, 0x00000100, DC_CMD_GENERAL_INCR_SYNCPT_CNTRL);
+	tegra_dc_writel(dc, 0x100 | syncpt, DC_CMD_CONT_SYNCPT_VSYNC);
+
+	value = WIN_A_UF_INT | WIN_B_UF_INT | WIN_C_UF_INT | WIN_A_OF_INT;
+	tegra_dc_writel(dc, value, DC_CMD_INT_TYPE);
+
+	value = WIN_A_UF_INT | WIN_B_UF_INT | WIN_C_UF_INT |
+		WIN_A_OF_INT | WIN_B_OF_INT | WIN_C_OF_INT;
+	tegra_dc_writel(dc, value, DC_CMD_INT_POLARITY);
+
+	/* initialize timer */
+	value = CURSOR_THRESHOLD(0) | WINDOW_A_THRESHOLD(0x20) |
+		WINDOW_B_THRESHOLD(0x20) | WINDOW_C_THRESHOLD(0x20);
+	tegra_dc_writel(dc, value, DC_DISP_DISP_MEM_HIGH_PRIORITY);
+
+	value = CURSOR_THRESHOLD(0) | WINDOW_A_THRESHOLD(1) |
+		WINDOW_B_THRESHOLD(1) | WINDOW_C_THRESHOLD(1);
+	tegra_dc_writel(dc, value, DC_DISP_DISP_MEM_HIGH_PRIORITY_TIMER);
+
+	value = VBLANK_INT | WIN_A_UF_INT | WIN_B_UF_INT | WIN_C_UF_INT;
+	tegra_dc_writel(dc, value, DC_CMD_INT_ENABLE);
+
+	value = WIN_A_UF_INT | WIN_B_UF_INT | WIN_C_UF_INT;
+	tegra_dc_writel(dc, value, DC_CMD_INT_MASK);
+
+	if (dc->soc->supports_border_color)
+		tegra_dc_writel(dc, 0, DC_DISP_BORDER_COLOR);
 
 	return 0;
 

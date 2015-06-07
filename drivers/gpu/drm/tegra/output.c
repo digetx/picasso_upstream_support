@@ -38,6 +38,7 @@ int tegra_output_connector_get_modes(struct drm_connector *connector)
 
 	if (edid) {
 		err = drm_add_edid_modes(connector, edid);
+		drm_edid_to_eld(connector, edid);
 		kfree(edid);
 	}
 
