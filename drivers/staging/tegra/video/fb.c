@@ -293,6 +293,8 @@ static int tegra_fb_blank(int blank, struct fb_info *info)
 		tegra_fb->win->flags = TEGRA_WIN_FLAG_ENABLED;
 		tegra_dc_enable(dc);
 		tegra_enable_backlight(dc);
+		tegra_dc_update_windows(&tegra_fb->win, 1);
+		tegra_dc_sync_windows(&tegra_fb->win, 1);
 		return 0;
 
 	case FB_BLANK_NORMAL:
