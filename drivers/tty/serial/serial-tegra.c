@@ -396,10 +396,11 @@ static void tegra_uart_tx_dma_complete(void *args)
 	spin_lock_irqsave(&tup->uport.lock, flags);
 	xmit->tail = (xmit->tail + count) & (UART_XMIT_SIZE - 1);
 	tup->tx_in_progress = 0;
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
-		uart_write_wakeup(&tup->uport);
 	tegra_uart_start_next_tx(tup);
 	spin_unlock_irqrestore(&tup->uport.lock, flags);
+
+	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
+		uart_write_wakeup(&tup->uport);
 }
 
 static int tegra_uart_start_tx_dma(struct tegra_uart_port *tup,
@@ -491,18 +492,6 @@ static void tegra_uart_stop_tx(struct uart_port *u)
 	async_tx_ack(tup->tx_dma_desc);
 	xmit->tail = (xmit->tail + count) & (UART_XMIT_SIZE - 1);
 	tup->tx_in_progress = 0;
-	return;
-}
-
-static void tegra_uart_handle_tx_pio(struct tegra_uart_port *tup)
-{
-	struct circ_buf *xmit = &tup->uport.state->xmit;
-
-	tegra_uart_fill_tx_fifo(tup, tup->tx_bytes);
-	tup->tx_in_progress = 0;
-	if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS)
-		uart_write_wakeup(&tup->uport);
-	tegra_uart_start_next_tx(tup);
 	return;
 }
 
@@ -670,6 +659,7 @@ static irqreturn_t tegra_uart_isr(int irq, void *data)
 {
 	struct tegra_uart_port *tup = data;
 	struct uart_port *u = &tup->uport;
+	struct circ_buf *xmit;
 	unsigned long iir;
 	unsigned long ier;
 	bool is_rx_int = false;
@@ -701,7 +691,16 @@ static irqreturn_t tegra_uart_isr(int irq, void *data)
 		case 1: /* Transmit interrupt only triggered when using PIO */
 			tup->ier_shadow &= ~UART_IER_THRI;
 			tegra_uart_write(tup, tup->ier_shadow, UART_IER);
-			tegra_uart_handle_tx_pio(tup);
+			xmit = &tup->uport.state->xmit;
+
+			tegra_uart_fill_tx_fifo(tup, tup->tx_bytes);
+			tup->tx_in_progress = 0;
+			if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS) {
+				spin_unlock_irqrestore(&u->lock, flags);
+				uart_write_wakeup(&tup->uport);
+				spin_lock_irqsave(&u->lock, flags);
+			}
+			tegra_uart_start_next_tx(tup);
 			break;
 
 		case 4: /* End of data */
