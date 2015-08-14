@@ -951,10 +951,10 @@ static int tegra_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 
 	/* Stop the ep before we deal with the queue */
 	ep->stopped = 1;
-	ep_num = ep_index(ep);
 
 	/* Touch the registers if cable is connected and phy is on */
-	if (vbus_enabled(udc)) {
+	if (vbus_enabled(udc) && ep->desc) {
+		ep_num = ep_index(ep);
 		epctrl = udc_readl(udc, EP_CONTROL_REG_OFFSET + (ep_num * 4));
 		if (ep_is_in(ep))
 			epctrl &= ~EPCTRL_TX_ENABLE;
@@ -1005,7 +1005,8 @@ static int tegra_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 	/* Enable EP */
 out:
 	/* Touch the registers if cable is connected and phy is on */
-	if (vbus_enabled(udc)) {
+	if (vbus_enabled(udc) && ep->desc) {
+		ep_num = ep_index(ep);
 		epctrl = udc_readl(udc, EP_CONTROL_REG_OFFSET + (ep_num * 4));
 		if (ep_is_in(ep))
 			epctrl |= EPCTRL_TX_ENABLE;
