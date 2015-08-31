@@ -239,6 +239,8 @@ static int dma_chan_get(struct dma_chan *chan)
 
 	if (!dma_has_cap(DMA_PRIVATE, chan->device->cap_mask))
 		balance_ref_count(chan);
+	else
+		chan->device->privatecnt++;
 
 out:
 	chan->client_count++;
