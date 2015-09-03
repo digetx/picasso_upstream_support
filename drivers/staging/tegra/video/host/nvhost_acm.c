@@ -61,8 +61,10 @@ static void do_unpowergate_locked(struct nvhost_device *dev)
 
 	dev_info(&dev->dev, "%s id=%d\n", __func__, id);
 
-	if (id != -1 && dev->rst)
+	if (id != -1 && dev->rst) {
 		WARN_ON(tegra_powergate_sequence_power_up(id, dev->clk[0], dev->rst));
+		clk_disable_unprepare(dev->clk[0]);
+	}
 }
 
 static void do_module_reset_locked(struct nvhost_device *dev)
