@@ -16,9 +16,15 @@
  *
  */
 
+#include <linux/delay.h>
 #include <linux/gpio/machine.h>
+#include <linux/init.h>
+#include <linux/io.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/rfkill-gpio.h>
+
+#include "iomap.h"
 
 static struct rfkill_gpio_platform_data bluetooth_rfkill_platform_data = {
 	.name	= "bluetooth_rfkill",
@@ -46,3 +52,26 @@ void __init tegra_picasso_rfkill_init(void)
 	gpiod_add_lookup_table(&bluetooth_gpio_lookup);
 	platform_device_register(&bluetooth_rfkill_device);
 }
+
+static int __init tegra_picasso_wifi_pwr_and_reset(void)
+{
+	if (!of_machine_is_compatible("acer,picasso"))
+		return 0;
+
+	writel(0x00004000, IO_TO_VIRT(0x6000D928));
+	writel(0x00004040, IO_TO_VIRT(0x6000D918));
+	writel(0x00004040, IO_TO_VIRT(0x6000D908));
+
+	writel(0x00000200, IO_TO_VIRT(0x6000D82C));
+	writel(0x00000202, IO_TO_VIRT(0x6000D81C));
+	writel(0x00000202, IO_TO_VIRT(0x6000D80C));
+
+	writel(0x00004040, IO_TO_VIRT(0x6000D928));
+	mdelay(100);
+
+	writel(0x00000202, IO_TO_VIRT(0x6000D82C));
+	mdelay(200);
+
+	return 0;
+}
+arch_initcall_sync(tegra_picasso_wifi_pwr_and_reset);
