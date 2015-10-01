@@ -707,7 +707,8 @@
 		bus-width = <4>;
 		power-gpios = <&gpio TEGRA_GPIO(K, 5) GPIO_ACTIVE_HIGH>;
 		keep-power-in-suspend;
-		/* enable-sdio-wakeup; - Comment out until fixed */
+		sd-ignore-pm-notify;
+		enable-sdio-wakeup;
 		broken-cd;
 
 		brcmf: bcrmf@1 {
