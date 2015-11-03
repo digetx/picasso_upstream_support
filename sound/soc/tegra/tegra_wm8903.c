@@ -30,6 +30,7 @@
 
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/regulator/consumer.h>
 #include <linux/slab.h>
 #include <linux/gpio.h>
 #include <linux/of_gpio.h>
@@ -53,6 +54,7 @@ struct tegra_wm8903 {
 	int gpio_int_mic_en;
 	int gpio_ext_mic_en;
 	struct tegra_asoc_utils_data util_data;
+	struct regulator *dmic_reg;
 };
 
 static int tegra_wm8903_hw_params(struct snd_pcm_substream *substream,
@@ -125,6 +127,29 @@ static struct snd_soc_jack_pin tegra_wm8903_mic_jack_pins[] = {
 	},
 };
 
+static int tegra_wm8903_event_int_mic(struct snd_soc_dapm_widget *w,
+					struct snd_kcontrol *k, int event)
+{
+	struct snd_soc_dapm_context *dapm = w->dapm;
+	struct snd_soc_card *card = dapm->card;
+	struct tegra_wm8903 *machine = snd_soc_card_get_drvdata(card);
+
+	if (!gpio_is_valid(machine->gpio_int_mic_en))
+		return 0;
+
+	if (!IS_ERR(machine->dmic_reg)) {
+		if (SND_SOC_DAPM_EVENT_ON(event))
+			WARN_ON(regulator_enable(machine->dmic_reg));
+		else
+			regulator_disable(machine->dmic_reg);
+	}
+
+	gpio_set_value_cansleep(machine->gpio_int_mic_en,
+				SND_SOC_DAPM_EVENT_ON(event));
+
+	return 0;
+}
+
 static int tegra_wm8903_event_int_spk(struct snd_soc_dapm_widget *w,
 					struct snd_kcontrol *k, int event)
 {
@@ -158,6 +183,7 @@ static int tegra_wm8903_event_hp(struct snd_soc_dapm_widget *w,
 }
 
 static const struct snd_soc_dapm_widget tegra_wm8903_dapm_widgets[] = {
+	SND_SOC_DAPM_MIC("Int Mic", tegra_wm8903_event_int_mic),
 	SND_SOC_DAPM_SPK("Int Spk", tegra_wm8903_event_int_spk),
 	SND_SOC_DAPM_HP("Headphone Jack", tegra_wm8903_event_hp),
 	SND_SOC_DAPM_MIC("Mic Jack", NULL),
@@ -165,6 +191,28 @@ static const struct snd_soc_dapm_widget tegra_wm8903_dapm_widgets[] = {
 
 static const struct snd_kcontrol_new tegra_wm8903_controls[] = {
 	SOC_DAPM_PIN_SWITCH("Int Spk"),
+};
+
+static int tegra_wm8903_jack_notifier(struct notifier_block *self,
+				      unsigned long action, void *dev)
+{
+	struct snd_soc_jack *jack = dev;
+	struct snd_soc_card *card = jack->card;
+	struct snd_soc_dapm_context *dapm = &card->dapm;
+
+	if (action & SND_JACK_HEADPHONE) {
+		snd_soc_dapm_enable_pin(dapm, "Headphone Jack");
+		snd_soc_dapm_disable_pin(dapm, "Int Spk");
+	} else {
+		snd_soc_dapm_disable_pin(dapm, "Headphone Jack");
+		snd_soc_dapm_enable_pin(dapm, "Int Spk");
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block tegra_wm8903_jack_detect_nb = {
+	.notifier_call = tegra_wm8903_jack_notifier,
 };
 
 static int tegra_wm8903_init(struct snd_soc_pcm_runtime *rtd)
@@ -183,6 +231,8 @@ static int tegra_wm8903_init(struct snd_soc_pcm_runtime *rtd)
 		snd_soc_jack_add_gpios(&tegra_wm8903_hp_jack,
 					1,
 					&tegra_wm8903_hp_jack_gpio);
+		snd_soc_jack_notifier_register(&tegra_wm8903_hp_jack,
+				&tegra_wm8903_jack_detect_nb);
 	}
 
 	snd_soc_card_jack_new(rtd->card, "Mic Jack", SND_JACK_MICROPHONE,
@@ -315,6 +365,10 @@ static int tegra_wm8903_driver_probe(struct platform_device *pdev)
 			return ret;
 		}
 	}
+
+	machine->dmic_reg = devm_regulator_get(&pdev->dev, "vdd_dmic");
+	if (IS_ERR(machine->dmic_reg))
+		dev_info(&pdev->dev, "No digital mic regulator found\n");
 
 	ret = snd_soc_of_parse_card_name(card, "nvidia,model");
 	if (ret)
