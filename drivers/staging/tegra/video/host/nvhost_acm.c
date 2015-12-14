@@ -113,7 +113,7 @@ void nvhost_module_reset(struct nvhost_device *dev)
 		__func__, dev->name,
 		dev->powergate_ids[0], dev->powergate_ids[1]);
 
-	mutex_lock(&dev->lock);
+	mutex_lock_nested(&dev->lock, dev->index == 10);
 	do_module_reset_locked(dev);
 	mutex_unlock(&dev->lock);
 
@@ -234,7 +234,7 @@ void nvhost_module_busy(struct nvhost_device *dev)
 	if (drv->busy)
 		drv->busy(dev);
 
-	mutex_lock(&dev->lock);
+	mutex_lock_nested(&dev->lock, dev->index == 10);
 	cancel_delayed_work(&dev->powerstate_down);
 
 	dev->refcount++;
@@ -251,7 +251,7 @@ static void powerstate_down_handler(struct work_struct *work)
 			struct nvhost_device,
 			powerstate_down);
 
-	mutex_lock(&dev->lock);
+	mutex_lock_nested(&dev->lock, dev->index == 10);
 	if (dev->refcount == 0) {
 		switch (dev->powerstate) {
 		case NVHOST_POWER_STATE_RUNNING:
@@ -274,7 +274,7 @@ void nvhost_module_idle_mult(struct nvhost_device *dev, int refs)
 	struct nvhost_driver *drv = to_nvhost_driver(dev->dev.driver);
 	bool kick = false;
 
-	mutex_lock(&dev->lock);
+	mutex_lock_nested(&dev->lock, dev->index == 10);
 	dev->refcount -= refs;
 	if (dev->refcount == 0) {
 		if (nvhost_module_powered(dev))
@@ -609,7 +609,7 @@ fail_attrib_alloc:
 static int is_module_idle(struct nvhost_device *dev)
 {
 	int count;
-	mutex_lock(&dev->lock);
+	mutex_lock_nested(&dev->lock, dev->index == 10);
 	count = dev->refcount;
 	WARN(count != 0, "is_module_idle %s count: %d\n", dev->name, count);
 	mutex_unlock(&dev->lock);
@@ -629,7 +629,7 @@ int nvhost_module_suspend(struct nvhost_device *dev)
 		return -EBUSY;
 	}
 
-	mutex_lock(&dev->lock);
+	mutex_lock_nested(&dev->lock, dev->index == 10);
 	cancel_delayed_work(&dev->powerstate_down);
 	to_state_powergated_locked(dev);
 	mutex_unlock(&dev->lock);

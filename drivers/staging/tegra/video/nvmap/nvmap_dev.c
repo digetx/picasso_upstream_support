@@ -328,7 +328,6 @@ void nvmap_carveout_commit_add(struct nvmap_client *client,
 {
 	unsigned long flags;
 
-	nvmap_ref_lock(client);
 	spin_lock_irqsave(&node->clients_lock, flags);
 	BUG_ON(list_empty(&client->carveout_commit[node->index].list) &&
 	       client->carveout_commit[node->index].commit != 0);
@@ -341,7 +340,6 @@ void nvmap_carveout_commit_add(struct nvmap_client *client,
 			 &node->clients);
 	}
 	spin_unlock_irqrestore(&node->clients_lock, flags);
-	nvmap_ref_unlock(client);
 }
 
 void nvmap_carveout_commit_subtract(struct nvmap_client *client,
