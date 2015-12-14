@@ -74,6 +74,7 @@ struct nvhost_device tegra_host1x01_t20_device = {
 	.dev		= {.platform_data = &host1x01_info},
 	.name		= "host1x",
 	.id		= -1,
+	.index		= 10,
 	.clocks		= {{"host1x", 166000000}, {} },
 	NVHOST_MODULE_NO_POWERGATE_IDS,
 };
@@ -187,7 +188,7 @@ static struct nvhost_device *t20_devices[] = {
 	&tegra_dsi01_t20_device,
 };
 
-struct of_dev_auxdata tegra20_auxdata_lookup[] __initdata = {
+struct of_dev_auxdata tegra20_auxdata_lookup[] = {
 	NVHOST_T20_OF_DEV_AUXDATA,
 	{}
 };

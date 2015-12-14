@@ -158,7 +158,7 @@ struct nvmap_vma_priv {
 
 static inline void nvmap_ref_lock(struct nvmap_client *priv)
 {
-	mutex_lock(&priv->ref_lock);
+	mutex_lock_nested(&priv->ref_lock, SINGLE_DEPTH_NESTING);
 }
 
 static inline void nvmap_ref_unlock(struct nvmap_client *priv)
