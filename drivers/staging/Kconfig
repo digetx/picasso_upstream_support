@@ -24,6 +24,8 @@ menuconfig STAGING
 
 if STAGING
 
+source "drivers/staging/a500/Kconfig"
+
 source "drivers/staging/slicoss/Kconfig"
 
 source "drivers/staging/wlan-ng/Kconfig"
