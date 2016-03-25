@@ -1,12 +1,8 @@
 /*
- * arch/arm/mach-tegra/board.h
- *
- * Copyright (c) 2013 NVIDIA Corporation. All rights reserved.
- * Copyright (C) 2010 Google, Inc.
+ * Copyright (C) 2011 Google, Inc.
  *
  * Author:
- *	Colin Cross <ccross@google.com>
- *	Erik Gilling <konkers@google.com>
+ *	Colin Cross <ccross@android.com>
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -19,16 +15,10 @@
  *
  */
 
-#ifndef __MACH_TEGRA_BOARD_H
-#define __MACH_TEGRA_BOARD_H
+#ifndef __MACH_TEGRA_TEGRA2_EMC_H_
+#define __MACH_TEGRA_TEGRA2_EMC_H
 
-#include <linux/types.h>
-#include <linux/reboot.h>
-
-void __init tegra_map_common_io(void);
-void __init tegra_init_irq(void);
-
-void __init tegra_paz00_wifikill_init(void);
-void __init tegra_picasso_rfkill_init(void);
+int tegra_emc_set_rate(unsigned long rate);
+long tegra_emc_round_rate(unsigned long rate);
 
 #endif

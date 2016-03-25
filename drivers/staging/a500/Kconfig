@@ -1,0 +1,14 @@
+config A500
+	bool "Acer A500 drivers"
+	depends on ARCH_TEGRA
+	default n
+	---help---
+	  Say Y here to build Acer A500 tablet device drivers.
+
+if A500
+
+source "drivers/staging/a500/ec/Kconfig"
+
+source "drivers/staging/a500/touchscreen/Kconfig"
+
+endif # A500
