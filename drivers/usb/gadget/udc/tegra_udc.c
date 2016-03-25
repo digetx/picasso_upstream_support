@@ -1247,10 +1247,11 @@ static int tegra_pullup(struct usb_gadget *gadget, int is_on)
 
 	udc = container_of(gadget, struct tegra_udc, gadget);
 
+	udc->softconnect = !!is_on;
+
 	if (!udc->vbus_active)
 		return -EOPNOTSUPP;
 
-	udc->softconnect = (is_on != 0);
 	if (udc->transceiver && udc->transceiver->otg->state !=
 			OTG_STATE_B_PERIPHERAL)
 			return 0;
