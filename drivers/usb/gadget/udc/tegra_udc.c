@@ -2307,6 +2307,9 @@ static int tegra_udc_probe(struct platform_device *pdev)
 	if (udc == NULL)
 		return -ENOMEM;
 
+	/* Create work for controlling clocks to the PHY if OTG is disabled */
+	INIT_WORK(&udc->irq_work, tegra_udc_irq_work);
+
 	udc->clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(udc->clk)) {
 		dev_err(&pdev->dev, "can't get clock\n");
@@ -2433,9 +2436,6 @@ static int tegra_udc_probe(struct platform_device *pdev)
 					 tegra_udc_release);
 	if (err)
 		goto err_del_udc;
-
-	/* Create work for controlling clocks to the phy if otg is disabled */
-	INIT_WORK(&udc->irq_work, tegra_udc_irq_work);
 
 #ifdef CONFIG_USB_OTG_UTILS
 	udc->transceiver = usb_get_phy(USB_PHY_TYPE_USB2);
