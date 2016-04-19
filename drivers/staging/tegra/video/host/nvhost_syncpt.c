@@ -331,15 +331,10 @@ void nvhost_mutex_unlock(struct nvhost_syncpt *sp, int idx)
 	atomic_dec(&sp->lock_counts[idx]);
 }
 
-/* check for old WAITs to be removed (avoiding a wrap) */
-int nvhost_syncpt_wait_check(struct nvhost_syncpt *sp,
-			     struct nvmap_client *nvmap,
-			     u32 waitchk_mask,
-			     struct nvhost_waitchk *wait,
-			     int num_waitchk)
+/* remove a wait pointed to by patch_addr */
+int nvhost_syncpt_patch_wait(struct nvhost_syncpt *sp, void *patch_addr)
 {
-	return syncpt_op().wait_check(sp, nvmap,
-			waitchk_mask, wait, num_waitchk);
+	return syncpt_op().patch_wait(sp, patch_addr);
 }
 
 /* Displays the current value of the sync point via sysfs */
