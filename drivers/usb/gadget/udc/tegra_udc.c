@@ -2432,6 +2432,11 @@ static int tegra_udc_probe(struct platform_device *pdev)
 	if (!udc->ahb_gizmo)
 		goto err_del_udc;
 
+	/* Create work for controlling clocks to the phy if otg is disabled */
+	INIT_WORK(&udc->irq_work, tegra_udc_irq_work);
+
+	dr_controller_run(udc);
+
 	err = usb_add_gadget_udc_release(&pdev->dev, &udc->gadget,
 					 tegra_udc_release);
 	if (err)
@@ -2441,18 +2446,18 @@ static int tegra_udc_probe(struct platform_device *pdev)
 	udc->transceiver = usb_get_phy(USB_PHY_TYPE_USB2);
 
 	if (udc->transceiver) {
+#else
+	if (!vbus_enabled(udc)) {
+#endif
 		dr_controller_stop(udc);
 		dr_controller_reset(udc);
 		usb_phy_set_suspend(udc->phy, 1);
 		udc->vbus_active = 0;
 		udc->usb_state = USB_STATE_DEFAULT;
+#ifdef CONFIG_USB_OTG_UTILS
 		otg_set_peripheral(udc->transceiver->otg, &udc->gadget);
-	}
-#else
-	/* Power down the phy if cable is not connected */
-	if (!vbus_enabled(udc))
-		usb_phy_set_suspend(udc->phy, 1);
 #endif
+	}
 
 	dev_info(&pdev->dev, "registered\n");
 	return 0;
