@@ -1,0 +1,12 @@
+config TEGRA_DOWNSTREAM
+	bool "Downstream NVIDIA Tegra drivers"
+	depends on ARCH_TEGRA && !CONFIG_TEGRA20_MC
+	default n
+	help
+	  Say Y to build downstream NVIDIA Tegra 2/3 drivers.
+
+if TEGRA_DOWNSTREAM
+
+source "drivers/staging/tegra/video/Kconfig"
+
+endif # TEGRA_DOWNSTREAM

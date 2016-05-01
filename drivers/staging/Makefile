@@ -3,6 +3,8 @@
 # fix for build system bug...
 obj-$(CONFIG_STAGING)		+= staging.o
 
+obj-$(CONFIG_TEGRA_DOWNSTREAM)	+= tegra/
+
 obj-$(CONFIG_A500)		+= a500/
 
 obj-y				+= media/
