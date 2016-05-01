@@ -1,0 +1,8 @@
+config VIDEO_TEGRA_V4L
+	bool "Tegra soc_camera host driver"
+	depends on VIDEO_DEV && ARCH_TEGRA && SOC_CAMERA
+	select VIDEOBUF2_CORE
+	select VIDEOBUF2_MEMOPS
+	default y
+	---help---
+	  This is a v4l2 driver for the Tegra camera interface
