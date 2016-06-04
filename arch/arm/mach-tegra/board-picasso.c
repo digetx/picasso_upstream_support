@@ -22,21 +22,23 @@
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/rfkill-gpio.h>
+#include <linux/property.h>
 
 #include "iomap.h"
 
-static struct rfkill_gpio_platform_data bluetooth_rfkill_platform_data = {
-	.name	= "bluetooth_rfkill",
-	.type	= RFKILL_TYPE_BLUETOOTH,
+static struct property_entry __initdata bluetooth_rfkill_prop[] = {
+	PROPERTY_ENTRY_STRING("name", "bluetooth_rfkill"),
+	PROPERTY_ENTRY_STRING("type", "bluetooth"),
+	{ },
+};
+
+static struct property_set __initdata bluetooth_rfkill_pset = {
+	.properties = bluetooth_rfkill_prop,
 };
 
 static struct platform_device bluetooth_rfkill_device = {
 	.name	= "rfkill_gpio",
 	.id	= 1,
-	.dev	= {
-		.platform_data = &bluetooth_rfkill_platform_data,
-	},
 };
 
 static struct gpiod_lookup_table bluetooth_gpio_lookup = {
@@ -49,6 +51,7 @@ static struct gpiod_lookup_table bluetooth_gpio_lookup = {
 
 void __init tegra_picasso_rfkill_init(void)
 {
+	platform_device_add_properties(&bluetooth_rfkill_device, &bluetooth_rfkill_pset);
 	gpiod_add_lookup_table(&bluetooth_gpio_lookup);
 	platform_device_register(&bluetooth_rfkill_device);
 }
