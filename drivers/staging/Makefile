@@ -43,3 +43,4 @@ obj-$(CONFIG_MOST)		+= most/
 obj-$(CONFIG_ISDN_I4L)		+= i4l/
 
 obj-$(CONFIG_A500)		+= a500/
+obj-$(CONFIG_TEGRA_DOWNSTREAM)	+= tegra/
