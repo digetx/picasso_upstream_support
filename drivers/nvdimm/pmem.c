@@ -66,22 +66,25 @@ static int pmem_do_bvec(struct pmem_device *pmem, struct page *page,
 			unsigned int len, unsigned int off, int rw,
 			sector_t sector)
 {
+	int rc = 0;
 	void *mem = kmap_atomic(page);
 	phys_addr_t pmem_off = sector * 512 + pmem->data_offset;
 	void __pmem *pmem_addr = pmem->virt_addr + pmem_off;
 
 	if (rw == READ) {
 		if (unlikely(is_bad_pmem(&pmem->bb, sector, len)))
-			return -EIO;
-		memcpy_from_pmem(mem + off, pmem_addr, len);
-		flush_dcache_page(page);
+			rc = -EIO;
+		else {
+			memcpy_from_pmem(mem + off, pmem_addr, len);
+			flush_dcache_page(page);
+		}
 	} else {
 		flush_dcache_page(page);
 		memcpy_to_pmem(pmem_addr, mem + off, len);
 	}
 
 	kunmap_atomic(mem);
-	return 0;
+	return rc;
 }
 
 static blk_qc_t pmem_make_request(struct request_queue *q, struct bio *bio)
@@ -311,9 +314,16 @@ static int nd_pfn_init(struct nd_pfn *nd_pfn)
 	 * implementation will limit the pfns advertised through
 	 * ->direct_access() to those that are included in the memmap.
 	 */
-	if (nd_pfn->mode == PFN_MODE_PMEM)
-		offset = ALIGN(SZ_8K + 64 * npfns, nd_pfn->align);
-	else if (nd_pfn->mode == PFN_MODE_RAM)
+	if (nd_pfn->mode == PFN_MODE_PMEM) {
+		unsigned long memmap_size;
+
+		/*
+		 * vmemmap_populate_hugepages() allocates the memmap array in
+		 * HPAGE_SIZE chunks.
+		 */
+		memmap_size = ALIGN(64 * npfns, PMD_SIZE);
+		offset = ALIGN(SZ_8K + memmap_size, nd_pfn->align);
+	} else if (nd_pfn->mode == PFN_MODE_RAM)
 		offset = ALIGN(SZ_8K, nd_pfn->align);
 	else
 		goto err;

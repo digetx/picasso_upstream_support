@@ -3070,17 +3070,17 @@ static int mvneta_stop(struct net_device *dev)
 	struct mvneta_port *pp = netdev_priv(dev);
 
 	/* Inform that we are stopping so we don't want to setup the
-	 * driver for new CPUs in the notifiers
+	 * driver for new CPUs in the notifiers. The code of the
+	 * notifier for CPU online is protected by the same spinlock,
+	 * so when we get the lock, the notifer work is done.
 	 */
 	spin_lock(&pp->lock);
 	pp->is_stopped = true;
+	spin_unlock(&pp->lock);
+
 	mvneta_stop_dev(pp);
 	mvneta_mdio_remove(pp);
 	unregister_cpu_notifier(&pp->cpu_notifier);
-	/* Now that the notifier are unregistered, we can release le
-	 * lock
-	 */
-	spin_unlock(&pp->lock);
 	on_each_cpu(mvneta_percpu_disable, pp, true);
 	free_percpu_irq(dev->irq, pp->ports);
 	mvneta_cleanup_rxqs(pp);
@@ -3612,6 +3612,7 @@ static int mvneta_probe(struct platform_device *pdev)
 	dev->ethtool_ops = &mvneta_eth_tool_ops;
 
 	pp = netdev_priv(dev);
+	spin_lock_init(&pp->lock);
 	pp->phy_node = phy_node;
 	pp->phy_interface = phy_mode;
 
@@ -3720,7 +3721,7 @@ static int mvneta_probe(struct platform_device *pdev)
 	dev->features = NETIF_F_SG | NETIF_F_IP_CSUM | NETIF_F_TSO;
 	dev->hw_features |= dev->features;
 	dev->vlan_features |= dev->features;
-	dev->priv_flags |= IFF_UNICAST_FLT;
+	dev->priv_flags |= IFF_UNICAST_FLT | IFF_LIVE_ADDR_CHANGE;
 	dev->gso_max_segs = MVNETA_MAX_TSO_SEGS;
 
 	err = register_netdev(dev);
