@@ -1,0 +1,11 @@
+config TOUCHSCREEN_ATMEL_MXT_A500
+	tristate "A500 Atmel mXT I2C Touchscreen"
+	depends on INPUT_TOUCHSCREEN && I2C && ARCH_TEGRA
+	help
+	  Say Y here if you have Atmel mXT series I2C touchscreen,
+	  found on Acer A500 tablet device.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called atmel_mxt_ts_a500.
