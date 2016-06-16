@@ -165,6 +165,36 @@
 				};
 			};
 		};
+
+		vi@54080000 {
+			reg-names = "regs";
+			power-gpio = <&gpio TEGRA_GPIO(V, 4) GPIO_ACTIVE_HIGH>;
+			vcsi-supply = <&avdd_vdac_reg>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+//				port@0 {
+//					reg = <1>;
+//					vi_1: endpoint@0 {
+//						remote-endpoint = <&camera_mt9p111>;
+//						data-lanes = <0>;
+//						bus-width = <8>;
+//					};
+//				};
+
+				port@1 {
+					reg = <2>;
+					vi_2: endpoint@1 {
+						remote-endpoint = <&camera_mt9d115>;
+						flip-horizontally;
+						data-lanes = <0>;
+						bus-width = <8>;
+					};
+				};
+			};
+		};
 	};
 
 	pinmux@70000014 {
@@ -551,6 +581,36 @@
 	i2c@7000c500 {
 		status = "okay";
 		clock-frequency = <400000>;
+
+		camera-back1@3d {
+			compatible = "aptina,mt9p111";
+			reg = <0x3d>;
+			pwdn-gpio = <&gpio TEGRA_GPIO(L, 0) GPIO_ACTIVE_HIGH>;
+			rst-gpio = <&gpio TEGRA_GPIO(L, 6) GPIO_ACTIVE_HIGH>;
+
+			status = "disabled";
+
+//			port {
+//				camera_mt9p111: endpoint {
+//					remote-endpoint = <&vi_1>;
+//					bus-width = <8>;
+//				};
+//			};
+		};
+
+		camera-front@3c {
+			compatible = "aptina,mt9d115";
+			reg = <0x3c>;
+			pwdn-gpio = <&gpio TEGRA_GPIO(L, 2) GPIO_ACTIVE_HIGH>;
+			rst-gpio = <&gpio TEGRA_GPIO(L, 4) GPIO_ACTIVE_HIGH>;
+
+			port {
+				camera_mt9d115: endpoint {
+					remote-endpoint = <&vi_2>;
+					bus-width = <8>;
+				};
+			};
+		};
 	};
 
 	gpio_charger: charger {
