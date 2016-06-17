@@ -1708,6 +1708,12 @@ static struct tegra_camera_platform_data *tegra_camera_parse_dt(
 		vic->continuous_clk =
 			!!(ep.bus.mipi_csi2.flags & V4L2_MBUS_CSI2_CONTINUOUS_CLOCK);
 
+		if (of_find_property(epn, "flip-vertically", NULL))
+			vic->flip_v = true;
+
+		if (of_find_property(epn, "flip-horizontally", NULL))
+			vic->flip_h = true;
+
 		dev_dbg(&ndev->dev, "VIC port %d lanes %d continuous_clk %d\n",
 			vic->port, vic->lanes, vic->continuous_clk);
 

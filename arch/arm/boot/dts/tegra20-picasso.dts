@@ -188,6 +188,7 @@
 					reg = <2>;
 					vi_2: endpoint@1 {
 						remote-endpoint = <&camera_mt9d115>;
+						flip-horizontally;
 						data-lanes = <0>;
 						bus-width = <8>;
 					};
