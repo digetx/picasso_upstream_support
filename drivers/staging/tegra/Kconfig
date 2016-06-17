@@ -7,6 +7,7 @@ config TEGRA_DOWNSTREAM
 
 if TEGRA_DOWNSTREAM
 
+source "drivers/staging/tegra/media/Kconfig"
 source "drivers/staging/tegra/video/Kconfig"
 
 endif # TEGRA_DOWNSTREAM
