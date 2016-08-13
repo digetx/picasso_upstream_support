@@ -1,0 +1,134 @@
+/dts-v1/;
+
+#include <dt-bindings/input/input.h>
+#include "tegra20.dtsi"
+
+/ {
+	model = "Tegra2-QEMU";
+	compatible = "qemu,tegra20", "nvidia,tegra20";
+
+	memory {
+		reg = <0x00000000 0x40000000>;
+	};
+
+	aliases {
+		rtc0 = "/rtc@7000e000";
+		serial0 = &uartd;
+	};
+
+	host1x@50000000 {
+		compatible = "nvidia,tegra20-host1x", "simple-bus";
+		ranges;
+
+		dc@54200000 {
+			rgb {
+				status = "okay";
+
+				nvidia,panel = <&panel>;
+			};
+		};
+	};
+
+	video-decoder@0x6001a000 {
+		compatible = "nvidia,tegra20-vde";
+		reg = <0x6001a000 0x3D00    /* VDE registers */
+		       0x40000400 0x3FC00>; /* IRAM area */
+		reg-names = "regs", "iram";
+		interrupts = <GIC_SPI 9 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "sync-token";
+		clocks = <&tegra_car TEGRA20_CLK_VDE>;
+		clock-names = "vde";
+		resets = <&tegra_car TEGRA20_CLK_VDE>;
+		reset-names = "vde";
+	};
+
+	pmc@7000e400 {
+		nvidia,invert-interrupt;
+		nvidia,suspend-mode = <1>;
+		nvidia,cpu-pwr-good-time = <2000>;
+		nvidia,cpu-pwr-off-time = <100>;
+		nvidia,core-pwr-good-time = <3845 3845>;
+		nvidia,core-pwr-off-time = <458>;
+		nvidia,sys-clock-req-active-high;
+	};
+
+	serial@70006300 {
+		status = "okay";
+	};
+
+	panel: panel {
+		compatible = "auo,b133xtn01", "simple-panel";
+
+		power-supply = <&vdd_pnl_reg>;
+	};
+
+	clocks {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		clk32k_in: clock@0 {
+			compatible = "fixed-clock";
+			reg=<0>;
+			#clock-cells = <0>;
+			clock-frequency = <32768>;
+		};
+	};
+
+	sdhci@c8000600 {
+		status = "disabled";
+		bus-width = <4>;
+		non-removable;
+	};
+
+	usb@c5000000 {
+		status = "okay";
+	};
+
+	usb-phy@c5000000 {
+		status = "okay";
+	};
+
+	usb@c5008000 {
+		status = "okay";
+	};
+
+	usb-phy@c5008000 {
+		status = "okay";
+	};
+
+	regulators {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		vdd_3v3_reg: regulator@0 {
+			compatible = "regulator-fixed";
+			reg = <0>;
+			regulator-name = "vdd_3v3";
+			regulator-min-microvolt = <3300000>;
+			regulator-max-microvolt = <3300000>;
+			regulator-always-on;
+		};
+
+		vdd_pnl_reg: regulator@1 {
+			compatible = "regulator-fixed";
+			reg = <1>;
+			regulator-name = "vdd_pnl";
+			regulator-min-microvolt = <2800000>;
+			regulator-max-microvolt = <2800000>;
+		};
+	};
+
+	ethernet@a0000000 {
+		compatible = "smsc,lan9118", "smsc,lan9115";
+		reg = <0xa0000000 0x10000>;
+		interrupts = <GIC_SPI 95 IRQ_TYPE_LEVEL_HIGH>;
+		phy-mode = "mii";
+		reg-io-width = <4>;
+		smsc,irq-active-high;
+		smsc,irq-push-pull;
+		vdd33a-supply = <&vdd_3v3_reg>;
+		vddvario-supply = <&vdd_3v3_reg>;
+	};
+};

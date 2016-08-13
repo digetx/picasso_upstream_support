@@ -783,7 +783,8 @@ dtb-$(CONFIG_ARCH_TEGRA_2x_SOC) += \
 	tegra20-tec.dtb \
 	tegra20-trimslice.dtb \
 	tegra20-ventana.dtb \
-	tegra20-whistler.dtb
+	tegra20-whistler.dtb \
+	tegra20-qemu.dtb
 dtb-$(CONFIG_ARCH_TEGRA_3x_SOC) += \
 	tegra30-apalis-eval.dtb \
 	tegra30-beaver.dtb \
