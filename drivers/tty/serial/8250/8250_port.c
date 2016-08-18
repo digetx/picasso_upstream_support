@@ -191,9 +191,9 @@ static const struct serial8250_config uart_config[] = {
 		.name		= "Tegra",
 		.fifo_size	= 32,
 		.tx_loadsz	= 8,
-		.fcr		= UART_FCR_ENABLE_FIFO | UART_FCR_R_TRIG_01 |
-				  UART_FCR_T_TRIG_01,
-		.rxtrig_bytes	= {1, 4, 8, 14},
+		.fcr		= UART_FCR_ENABLE_FIFO | UART_FCR_R_TRIG_00 |
+				  UART_FCR_T_TRIG_00,
+// 		.rxtrig_bytes	= {1, 4, 8, 14},
 		.flags		= UART_CAP_FIFO | UART_CAP_RTOIE,
 	},
 	[PORT_XR17D15X] = {
