@@ -44,8 +44,6 @@
 
 #define TEGRA_VDE_TIMEOUT	(msecs_to_jiffies(1000))
 
-#define MAX_MACROBLOCKS_NB	9075
-
 #define VDE_WR(data, addr)				\
 do {							\
 	pr_debug("%s: %d: 0x%08X => " #addr ")\n",	\
@@ -634,8 +632,6 @@ static int tegra_vde_copy_and_validate_frame(struct device *dev,
 static int tegra_vde_validate_h264_ctx(struct device *dev,
 				       struct tegra_vde_h264_decoder_ctx *ctx)
 {
-	u32 macroblocks_nb;
-
 	if (ctx->dpb_frames_nb == 0 || ctx->dpb_frames_nb > 17) {
 		dev_err(dev, "Bad DPB size %u\n", ctx->dpb_frames_nb);
 		return -EINVAL;
@@ -687,21 +683,15 @@ static int tegra_vde_validate_h264_ctx(struct device *dev,
 		return -EINVAL;
 	}
 
-	if (!ctx->pic_width_in_mbs) {
-		dev_err(dev, "Bad pic_width_in_mbs value 0\n");
+	if (!ctx->pic_width_in_mbs || ctx->pic_width_in_mbs > 127) {
+		dev_err(dev, "Bad pic_width_in_mbs value %u, min 1 max 127\n",
+			ctx->pic_width_in_mbs);
 		return -EINVAL;
 	}
 
-	if (!ctx->pic_height_in_mbs) {
-		dev_err(dev, "Bad pic_height_in_mbs value 0\n");
-		return -EINVAL;
-	}
-
-	macroblocks_nb = ctx->pic_width_in_mbs * ctx->pic_height_in_mbs;
-
-	if (macroblocks_nb > MAX_MACROBLOCKS_NB) {
-		dev_err(dev, "Too many macroblocks %u, max %d\n",
-			macroblocks_nb, MAX_MACROBLOCKS_NB);
+	if (!ctx->pic_height_in_mbs || ctx->pic_height_in_mbs > 127) {
+		dev_err(dev, "Bad pic_height_in_mbs value %u, min 1 max 127\n",
+			ctx->pic_height_in_mbs);
 		return -EINVAL;
 	}
 
