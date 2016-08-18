@@ -19,6 +19,19 @@
 		reg = <0x00000000 0x40000000>;
 	};
 
+	video-decoder@0x6001a000 {
+		compatible = "nvidia,tegra20-vde";
+		reg = <0x6001a000 0x3D00    /* VDE registers */
+		       0x40000400 0x3FC00>; /* IRAM area */
+		reg-names = "regs", "iram";
+		interrupts = <GIC_SPI 9 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "sync-token";
+		clocks = <&tegra_car TEGRA20_CLK_VDE>;
+		clock-names = "vde";
+		resets = <&tegra_car TEGRA20_CLK_VDE>;
+		reset-names = "vde";
+	};
+
 	host1x@50000000 {
 		dc@54200000 {
 			rgb {
