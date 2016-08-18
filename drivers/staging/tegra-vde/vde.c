@@ -802,7 +802,7 @@ static int tegra_vde_ioctl_decode_h264(struct tegra_vde *vde,
 		macroblocks_nb = readl(vde->regs + SXE(0xC8)) & 0x1FFF;
 
 		dev_err(dev, "Decoding failed, "
-				"read 0x%X bytes : %u macroblocks_nb parsed\n",
+				"read 0x%X bytes : %u macroblocks parsed\n",
 			bsev_paddr ? bsev_paddr - bitstream_data_paddr : 0,
 			macroblocks_nb);
 
