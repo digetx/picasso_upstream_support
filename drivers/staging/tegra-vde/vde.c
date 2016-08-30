@@ -358,7 +358,7 @@ static int tegra_vde_setup_context(struct tegra_vde *vde,
 	VDE_WR(0x00000000, vde->regs + BSEV(0x98));
 	VDE_WR(0x00000060, vde->regs + BSEV(0x9C));
 
-	memset(vde->iram + 512, 0, macroblocks_nb / 2);
+	memset_io(vde->iram + 512, 0, macroblocks_nb / 2);
 
 	tegra_setup_frameidx(vde->regs, dpb_frames, ctx->dpb_frames_nb,
 			     ctx->pic_width_in_mbs, ctx->pic_height_in_mbs);
