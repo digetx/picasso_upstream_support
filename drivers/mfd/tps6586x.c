@@ -133,6 +133,9 @@ struct tps6586x {
 	u32			irq_en;
 	u8			mask_reg[5];
 	struct irq_domain	*irq_domain;
+
+	bool			suspended;
+	bool			irq_disabled;
 };
 
 static inline struct tps6586x *dev_to_tps6586x(struct device *dev)
@@ -314,6 +317,12 @@ static irqreturn_t tps6586x_irq(int irq, void *data)
 	struct tps6586x *tps6586x = data;
 	u32 acks;
 	int ret = 0;
+
+	if (tps6586x->suspended) {
+		disable_irq_nosync(tps6586x->irq);
+		tps6586x->irq_disabled = true;
+		return IRQ_HANDLED;
+	}
 
 	ret = tps6586x_reads(tps6586x->dev, TPS6586X_INT_ACK1,
 			     sizeof(acks), (uint8_t *)&acks);
@@ -600,10 +609,38 @@ static const struct i2c_device_id tps6586x_id_table[] = {
 };
 MODULE_DEVICE_TABLE(i2c, tps6586x_id_table);
 
+static int tps6586x_suspend(struct device *dev)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct tps6586x *tps6586x = i2c_get_clientdata(client);
+
+	tps6586x->suspended = true;
+
+	return 0;
+}
+
+static int tps6586x_resume(struct device *dev)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct tps6586x *tps6586x = i2c_get_clientdata(client);
+
+	tps6586x->suspended = false;
+
+	if (tps6586x->irq_disabled) {
+		enable_irq(client->irq);
+		tps6586x->irq_disabled = false;
+	}
+
+	return 0;
+}
+
+static SIMPLE_DEV_PM_OPS(tps6586x_pm_ops, tps6586x_suspend, tps6586x_resume);
+
 static struct i2c_driver tps6586x_driver = {
 	.driver	= {
 		.name	= "tps6586x",
 		.of_match_table = of_match_ptr(tps6586x_of_match),
+		.pm	= &tps6586x_pm_ops,
 	},
 	.probe		= tps6586x_i2c_probe,
 	.remove		= tps6586x_i2c_remove,
