@@ -928,7 +928,7 @@ static ssize_t format_show(struct device *dev,
 {
 	struct acpi_nfit_control_region *dcr = to_nfit_dcr(dev);
 
-	return sprintf(buf, "0x%04x\n", be16_to_cpu(dcr->code));
+	return sprintf(buf, "0x%04x\n", le16_to_cpu(dcr->code));
 }
 static DEVICE_ATTR_RO(format);
 
@@ -961,8 +961,8 @@ static ssize_t format1_show(struct device *dev,
 				continue;
 			if (nfit_dcr->dcr->code == dcr->code)
 				continue;
-			rc = sprintf(buf, "%#x\n",
-					be16_to_cpu(nfit_dcr->dcr->code));
+			rc = sprintf(buf, "0x%04x\n",
+					le16_to_cpu(nfit_dcr->dcr->code));
 			break;
 		}
 		if (rc != ENXIO)
@@ -1151,9 +1151,10 @@ static int acpi_nfit_add_dimm(struct acpi_nfit_desc *acpi_desc,
 		if (disable_vendor_specific)
 			dsm_mask &= ~(1 << 8);
 	} else {
-		dev_err(dev, "unknown dimm command family\n");
+		dev_dbg(dev, "unknown dimm command family\n");
 		nfit_mem->family = -1;
-		return force_enable_dimms ? 0 : -ENODEV;
+		/* DSMs are optional, continue loading the driver... */
+		return 0;
 	}
 
 	uuid = to_nfit_uuid(nfit_mem->family);
@@ -1395,11 +1396,12 @@ static u32 read_blk_stat(struct nfit_blk *nfit_blk, unsigned int bw)
 {
 	struct nfit_blk_mmio *mmio = &nfit_blk->mmio[DCR];
 	u64 offset = nfit_blk->stat_offset + mmio->size * bw;
+	const u32 STATUS_MASK = 0x80000037;
 
 	if (mmio->num_lines)
 		offset = to_interleave_offset(offset, mmio);
 
-	return readl(mmio->addr.base + offset);
+	return readl(mmio->addr.base + offset) & STATUS_MASK;
 }
 
 static void write_blk_ctl(struct nfit_blk *nfit_blk, unsigned int bw,

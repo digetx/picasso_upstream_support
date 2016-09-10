@@ -217,10 +217,10 @@ enum ib_device_cap_flags {
 	IB_DEVICE_CROSS_CHANNEL		= (1 << 27),
 	IB_DEVICE_MANAGED_FLOW_STEERING		= (1 << 29),
 	IB_DEVICE_SIGNATURE_HANDOVER		= (1 << 30),
-	IB_DEVICE_ON_DEMAND_PAGING		= (1 << 31),
+	IB_DEVICE_ON_DEMAND_PAGING		= (1ULL << 31),
 	IB_DEVICE_SG_GAPS_REG			= (1ULL << 32),
-	IB_DEVICE_VIRTUAL_FUNCTION		= ((u64)1 << 33),
-	IB_DEVICE_RAW_SCATTER_FCS		= ((u64)1 << 34),
+	IB_DEVICE_VIRTUAL_FUNCTION		= (1ULL << 33),
+	IB_DEVICE_RAW_SCATTER_FCS		= (1ULL << 34),
 };
 
 enum ib_signature_prot_cap {
@@ -1428,6 +1428,10 @@ struct ib_srq {
 	} ext;
 };
 
+/*
+ * @max_write_sge: Maximum SGE elements per RDMA WRITE request.
+ * @max_read_sge:  Maximum SGE elements per RDMA READ request.
+ */
 struct ib_qp {
 	struct ib_device       *device;
 	struct ib_pd	       *pd;
@@ -1449,6 +1453,8 @@ struct ib_qp {
 	void                  (*event_handler)(struct ib_event *, void *);
 	void		       *qp_context;
 	u32			qp_num;
+	u32			max_write_sge;
+	u32			max_read_sge;
 	enum ib_qp_type		qp_type;
 };
 

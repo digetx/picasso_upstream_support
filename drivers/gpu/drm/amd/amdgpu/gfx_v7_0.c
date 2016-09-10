@@ -991,6 +991,22 @@ out:
 	return err;
 }
 
+static void gfx_v7_0_free_microcode(struct amdgpu_device *adev)
+{
+	release_firmware(adev->gfx.pfp_fw);
+	adev->gfx.pfp_fw = NULL;
+	release_firmware(adev->gfx.me_fw);
+	adev->gfx.me_fw = NULL;
+	release_firmware(adev->gfx.ce_fw);
+	adev->gfx.ce_fw = NULL;
+	release_firmware(adev->gfx.mec_fw);
+	adev->gfx.mec_fw = NULL;
+	release_firmware(adev->gfx.mec2_fw);
+	adev->gfx.mec2_fw = NULL;
+	release_firmware(adev->gfx.rlc_fw);
+	adev->gfx.rlc_fw = NULL;
+}
+
 /**
  * gfx_v7_0_tiling_mode_table_init - init the hw tiling table
  *
@@ -2761,8 +2777,7 @@ static int gfx_v7_0_cp_compute_resume(struct amdgpu_device *adev)
 	u64 wb_gpu_addr;
 	u32 *buf;
 	struct bonaire_mqd *mqd;
-
-	gfx_v7_0_cp_compute_enable(adev, true);
+	struct amdgpu_ring *ring;
 
 	/* fix up chicken bits */
 	tmp = RREG32(mmCP_CPF_DEBUG);
@@ -2797,7 +2812,7 @@ static int gfx_v7_0_cp_compute_resume(struct amdgpu_device *adev)
 
 	/* init the queues.  Just two for now. */
 	for (i = 0; i < adev->gfx.num_compute_rings; i++) {
-		struct amdgpu_ring *ring = &adev->gfx.compute_ring[i];
+		ring = &adev->gfx.compute_ring[i];
 
 		if (ring->mqd_obj == NULL) {
 			r = amdgpu_bo_create(adev,
@@ -2976,6 +2991,13 @@ static int gfx_v7_0_cp_compute_resume(struct amdgpu_device *adev)
 		amdgpu_bo_unreserve(ring->mqd_obj);
 
 		ring->ready = true;
+	}
+
+	gfx_v7_0_cp_compute_enable(adev, true);
+
+	for (i = 0; i < adev->gfx.num_compute_rings; i++) {
+		ring = &adev->gfx.compute_ring[i];
+
 		r = amdgpu_ring_test_ring(ring);
 		if (r)
 			ring->ready = false;
@@ -4489,6 +4511,7 @@ static int gfx_v7_0_sw_fini(void *handle)
 	gfx_v7_0_cp_compute_fini(adev);
 	gfx_v7_0_rlc_fini(adev);
 	gfx_v7_0_mec_fini(adev);
+	gfx_v7_0_free_microcode(adev);
 
 	return 0;
 }
@@ -4816,7 +4839,7 @@ static int gfx_v7_0_eop_irq(struct amdgpu_device *adev,
 	case 2:
 		for (i = 0; i < adev->gfx.num_compute_rings; i++) {
 			ring = &adev->gfx.compute_ring[i];
-			if ((ring->me == me_id) & (ring->pipe == pipe_id))
+			if ((ring->me == me_id) && (ring->pipe == pipe_id))
 				amdgpu_fence_process(ring);
 		}
 		break;

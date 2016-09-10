@@ -512,6 +512,10 @@ void intel_detect_pch(struct drm_device *dev)
 				DRM_DEBUG_KMS("Found SunrisePoint LP PCH\n");
 				WARN_ON(!IS_SKYLAKE(dev) &&
 					!IS_KABYLAKE(dev));
+			} else if (id == INTEL_PCH_KBP_DEVICE_ID_TYPE) {
+				dev_priv->pch_type = PCH_KBP;
+				DRM_DEBUG_KMS("Found KabyPoint PCH\n");
+				WARN_ON(!IS_KABYLAKE(dev));
 			} else if ((id == INTEL_PCH_P2X_DEVICE_ID_TYPE) ||
 				   (id == INTEL_PCH_P3X_DEVICE_ID_TYPE) ||
 				   ((id == INTEL_PCH_QEMU_DEVICE_ID_TYPE) &&
@@ -1573,6 +1577,9 @@ static int intel_runtime_suspend(struct device *device)
 	}
 
 	assert_forcewakes_inactive(dev_priv);
+
+	if (!IS_VALLEYVIEW(dev_priv) || !IS_CHERRYVIEW(dev_priv))
+		intel_hpd_poll_init(dev_priv);
 
 	DRM_DEBUG_KMS("Device suspended\n");
 	return 0;

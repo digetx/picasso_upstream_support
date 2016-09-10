@@ -242,18 +242,6 @@ unlock:
 	return ret;
 }
 
-static void event_function_local(struct perf_event *event, event_f func, void *data)
-{
-	struct event_function_struct efs = {
-		.event = event,
-		.func = func,
-		.data = data,
-	};
-
-	int ret = event_function(&efs);
-	WARN_ON_ONCE(ret);
-}
-
 static void event_function_call(struct perf_event *event, event_f func, void *data)
 {
 	struct perf_event_context *ctx = event->ctx;
@@ -301,6 +289,54 @@ again:
 	}
 	func(event, NULL, ctx, data);
 	raw_spin_unlock_irq(&ctx->lock);
+}
+
+/*
+ * Similar to event_function_call() + event_function(), but hard assumes IRQs
+ * are already disabled and we're on the right CPU.
+ */
+static void event_function_local(struct perf_event *event, event_f func, void *data)
+{
+	struct perf_event_context *ctx = event->ctx;
+	struct perf_cpu_context *cpuctx = __get_cpu_context(ctx);
+	struct task_struct *task = READ_ONCE(ctx->task);
+	struct perf_event_context *task_ctx = NULL;
+
+	WARN_ON_ONCE(!irqs_disabled());
+
+	if (task) {
+		if (task == TASK_TOMBSTONE)
+			return;
+
+		task_ctx = ctx;
+	}
+
+	perf_ctx_lock(cpuctx, task_ctx);
+
+	task = ctx->task;
+	if (task == TASK_TOMBSTONE)
+		goto unlock;
+
+	if (task) {
+		/*
+		 * We must be either inactive or active and the right task,
+		 * otherwise we're screwed, since we cannot IPI to somewhere
+		 * else.
+		 */
+		if (ctx->is_active) {
+			if (WARN_ON_ONCE(task != current))
+				goto unlock;
+
+			if (WARN_ON_ONCE(cpuctx->task_ctx != ctx))
+				goto unlock;
+		}
+	} else {
+		WARN_ON_ONCE(&cpuctx->ctx != ctx);
+	}
+
+	func(event, cpuctx, ctx, data);
+unlock:
+	perf_ctx_unlock(cpuctx, task_ctx);
 }
 
 #define PERF_FLAG_ALL (PERF_FLAG_FD_NO_GROUP |\
@@ -1678,10 +1714,31 @@ static bool is_orphaned_event(struct perf_event *event)
 	return event->state == PERF_EVENT_STATE_DEAD;
 }
 
-static inline int pmu_filter_match(struct perf_event *event)
+static inline int __pmu_filter_match(struct perf_event *event)
 {
 	struct pmu *pmu = event->pmu;
 	return pmu->filter_match ? pmu->filter_match(event) : 1;
+}
+
+/*
+ * Check whether we should attempt to schedule an event group based on
+ * PMU-specific filtering. An event group can consist of HW and SW events,
+ * potentially with a SW leader, so we must check all the filters, to
+ * determine whether a group is schedulable:
+ */
+static inline int pmu_filter_match(struct perf_event *event)
+{
+	struct perf_event *child;
+
+	if (!__pmu_filter_match(event))
+		return 0;
+
+	list_for_each_entry(child, &event->sibling_list, group_entry) {
+		if (!__pmu_filter_match(child))
+			return 0;
+	}
+
+	return 1;
 }
 
 static inline int
@@ -3862,10 +3919,8 @@ static void _free_event(struct perf_event *event)
 	if (event->ctx)
 		put_ctx(event->ctx);
 
-	if (event->pmu) {
-		exclusive_event_destroy(event);
-		module_put(event->pmu->module);
-	}
+	exclusive_event_destroy(event);
+	module_put(event->pmu->module);
 
 	call_rcu(&event->rcu_head, free_event_rcu);
 }
@@ -7531,7 +7586,7 @@ static void perf_event_free_bpf_prog(struct perf_event *event)
 	prog = event->tp_event->prog;
 	if (prog) {
 		event->tp_event->prog = NULL;
-		bpf_prog_put(prog);
+		bpf_prog_put_rcu(prog);
 	}
 }
 

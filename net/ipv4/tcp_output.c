@@ -236,7 +236,8 @@ void tcp_select_initial_window(int __space, __u32 mss,
 		/* Set window scaling on max possible window
 		 * See RFC1323 for an explanation of the limit to 14
 		 */
-		space = max_t(u32, sysctl_tcp_rmem[2], sysctl_rmem_max);
+		space = max_t(u32, space, sysctl_tcp_rmem[2]);
+		space = max_t(u32, space, sysctl_rmem_max);
 		space = min_t(u32, space, *window_clamp);
 		while (space > 65535 && (*rcv_wscale) < 14) {
 			space >>= 1;
@@ -2751,7 +2752,7 @@ void tcp_xmit_retransmit_queue(struct sock *sk)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *skb;
 	struct sk_buff *hole = NULL;
-	u32 last_lost;
+	u32 max_segs, last_lost;
 	int mib_idx;
 	int fwd_rexmitting = 0;
 
@@ -2771,6 +2772,7 @@ void tcp_xmit_retransmit_queue(struct sock *sk)
 		last_lost = tp->snd_una;
 	}
 
+	max_segs = tcp_tso_autosize(sk, tcp_current_mss(sk));
 	tcp_for_write_queue_from(skb, sk) {
 		__u8 sacked = TCP_SKB_CB(skb)->sacked;
 		int segs;
@@ -2784,6 +2786,10 @@ void tcp_xmit_retransmit_queue(struct sock *sk)
 		segs = tp->snd_cwnd - tcp_packets_in_flight(tp);
 		if (segs <= 0)
 			return;
+		/* In case tcp_shift_skb_data() have aggregated large skbs,
+		 * we need to make sure not sending too bigs TSO packets
+		 */
+		segs = min_t(int, segs, max_segs);
 
 		if (fwd_rexmitting) {
 begin_fwd:

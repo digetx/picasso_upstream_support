@@ -1534,30 +1534,30 @@ static noinline ssize_t __btrfs_buffered_write(struct file *file,
 		reserve_bytes = round_up(write_bytes + sector_offset,
 				root->sectorsize);
 
-		if ((BTRFS_I(inode)->flags & (BTRFS_INODE_NODATACOW |
-					      BTRFS_INODE_PREALLOC)) &&
-		    check_can_nocow(inode, pos, &write_bytes) > 0) {
-			/*
-			 * For nodata cow case, no need to reserve
-			 * data space.
-			 */
-			only_release_metadata = true;
-			/*
-			 * our prealloc extent may be smaller than
-			 * write_bytes, so scale down.
-			 */
-			num_pages = DIV_ROUND_UP(write_bytes + offset,
-						 PAGE_SIZE);
-			reserve_bytes = round_up(write_bytes + sector_offset,
-					root->sectorsize);
-			goto reserve_metadata;
+		ret = btrfs_check_data_free_space(inode, pos, write_bytes);
+		if (ret < 0) {
+			if ((BTRFS_I(inode)->flags & (BTRFS_INODE_NODATACOW |
+						      BTRFS_INODE_PREALLOC)) &&
+			    check_can_nocow(inode, pos, &write_bytes) > 0) {
+				/*
+				 * For nodata cow case, no need to reserve
+				 * data space.
+				 */
+				only_release_metadata = true;
+				/*
+				 * our prealloc extent may be smaller than
+				 * write_bytes, so scale down.
+				 */
+				num_pages = DIV_ROUND_UP(write_bytes + offset,
+							 PAGE_SIZE);
+				reserve_bytes = round_up(write_bytes +
+							 sector_offset,
+							 root->sectorsize);
+			} else {
+				break;
+			}
 		}
 
-		ret = btrfs_check_data_free_space(inode, pos, write_bytes);
-		if (ret < 0)
-			break;
-
-reserve_metadata:
 		ret = btrfs_delalloc_reserve_metadata(inode, reserve_bytes);
 		if (ret) {
 			if (!only_release_metadata)
@@ -1629,13 +1629,11 @@ again:
 		 * managed to copy.
 		 */
 		if (num_sectors > dirty_sectors) {
-			/*
-			 * we round down because we don't want to count
-			 * any partial blocks actually sent through the
-			 * IO machines
-			 */
-			release_bytes = round_down(release_bytes - copied,
-				      root->sectorsize);
+
+			/* release everything except the sectors we dirtied */
+			release_bytes -= dirty_sectors <<
+				root->fs_info->sb->s_blocksize_bits;
+
 			if (copied > 0) {
 				spin_lock(&BTRFS_I(inode)->lock);
 				BTRFS_I(inode)->outstanding_extents++;

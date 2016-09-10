@@ -281,6 +281,9 @@ struct i915_hotplug {
 	u32 short_port_mask;
 	struct work_struct dig_port_work;
 
+	struct work_struct poll_init_work;
+	bool poll_enabled;
+
 	/*
 	 * if we get a HPD irq from DP and a HPD irq from non-DP
 	 * the non-DP HPD could block the workqueue on a mode config
@@ -990,6 +993,7 @@ enum intel_pch {
 	PCH_CPT,	/* Cougarpoint PCH */
 	PCH_LPT,	/* Lynxpoint PCH */
 	PCH_SPT,        /* Sunrisepoint PCH */
+	PCH_KBP,        /* Kabypoint PCH */
 	PCH_NOP,
 };
 
@@ -2590,6 +2594,8 @@ struct drm_i915_cmd_table {
 #define SKL_REVID_D0		0x3
 #define SKL_REVID_E0		0x4
 #define SKL_REVID_F0		0x5
+#define SKL_REVID_G0		0x6
+#define SKL_REVID_H0		0x7
 
 #define IS_SKL_REVID(p, since, until) (IS_SKYLAKE(p) && IS_REVID(p, since, until))
 
@@ -2599,6 +2605,15 @@ struct drm_i915_cmd_table {
 #define BXT_REVID_C0		0x9
 
 #define IS_BXT_REVID(p, since, until) (IS_BROXTON(p) && IS_REVID(p, since, until))
+
+#define KBL_REVID_A0		0x0
+#define KBL_REVID_B0		0x1
+#define KBL_REVID_C0		0x2
+#define KBL_REVID_D0		0x3
+#define KBL_REVID_E0		0x4
+
+#define IS_KBL_REVID(p, since, until) \
+	(IS_KABYLAKE(p) && IS_REVID(p, since, until))
 
 /*
  * The genX designation typically refers to the render engine, so render
@@ -2708,11 +2723,13 @@ struct drm_i915_cmd_table {
 #define INTEL_PCH_LPT_LP_DEVICE_ID_TYPE		0x9c00
 #define INTEL_PCH_SPT_DEVICE_ID_TYPE		0xA100
 #define INTEL_PCH_SPT_LP_DEVICE_ID_TYPE		0x9D00
+#define INTEL_PCH_KBP_DEVICE_ID_TYPE		0xA200
 #define INTEL_PCH_P2X_DEVICE_ID_TYPE		0x7100
 #define INTEL_PCH_P3X_DEVICE_ID_TYPE		0x7000
 #define INTEL_PCH_QEMU_DEVICE_ID_TYPE		0x2900 /* qemu q35 has 2918 */
 
 #define INTEL_PCH_TYPE(dev) (__I915__(dev)->pch_type)
+#define HAS_PCH_KBP(dev) (INTEL_PCH_TYPE(dev) == PCH_KBP)
 #define HAS_PCH_SPT(dev) (INTEL_PCH_TYPE(dev) == PCH_SPT)
 #define HAS_PCH_LPT(dev) (INTEL_PCH_TYPE(dev) == PCH_LPT)
 #define HAS_PCH_LPT_LP(dev) (__I915__(dev)->pch_id == INTEL_PCH_LPT_LP_DEVICE_ID_TYPE)
@@ -2777,6 +2794,8 @@ void intel_hpd_init(struct drm_i915_private *dev_priv);
 void intel_hpd_init_work(struct drm_i915_private *dev_priv);
 void intel_hpd_cancel_work(struct drm_i915_private *dev_priv);
 bool intel_hpd_pin_to_port(enum hpd_pin pin, enum port *port);
+bool intel_hpd_disable(struct drm_i915_private *dev_priv, enum hpd_pin pin);
+void intel_hpd_enable(struct drm_i915_private *dev_priv, enum hpd_pin pin);
 
 /* i915_irq.c */
 void i915_queue_hangcheck(struct drm_device *dev);
@@ -3481,6 +3500,7 @@ int intel_bios_init(struct drm_i915_private *dev_priv);
 bool intel_bios_is_valid_vbt(const void *buf, size_t size);
 bool intel_bios_is_tv_present(struct drm_i915_private *dev_priv);
 bool intel_bios_is_lvds_present(struct drm_i915_private *dev_priv, u8 *i2c_pin);
+bool intel_bios_is_port_present(struct drm_i915_private *dev_priv, enum port port);
 bool intel_bios_is_port_edp(struct drm_i915_private *dev_priv, enum port port);
 bool intel_bios_is_port_dp_dual_mode(struct drm_i915_private *dev_priv, enum port port);
 bool intel_bios_is_dsi_present(struct drm_i915_private *dev_priv, enum port *port);

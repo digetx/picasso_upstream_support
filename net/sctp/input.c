@@ -112,7 +112,6 @@ int sctp_rcv(struct sk_buff *skb)
 	struct sctp_ep_common *rcvr;
 	struct sctp_transport *transport = NULL;
 	struct sctp_chunk *chunk;
-	struct sctphdr *sh;
 	union sctp_addr src;
 	union sctp_addr dest;
 	int family;
@@ -126,8 +125,6 @@ int sctp_rcv(struct sk_buff *skb)
 
 	if (skb_linearize(skb))
 		goto discard_it;
-
-	sh = sctp_hdr(skb);
 
 	/* Pull up the IP and SCTP headers. */
 	__skb_pull(skb, skb_transport_offset(skb));
@@ -230,7 +227,7 @@ int sctp_rcv(struct sk_buff *skb)
 	chunk->rcvr = rcvr;
 
 	/* Remember the SCTP header. */
-	chunk->sctp_hdr = sh;
+	chunk->sctp_hdr = sctp_hdr(skb);
 
 	/* Set the source and destination addresses of the incoming chunk.  */
 	sctp_init_addrs(chunk, &src, &dest);
@@ -331,6 +328,7 @@ int sctp_backlog_rcv(struct sock *sk, struct sk_buff *skb)
 		 */
 
 		sk = rcvr->sk;
+		local_bh_disable();
 		bh_lock_sock(sk);
 
 		if (sock_owned_by_user(sk)) {
@@ -342,6 +340,7 @@ int sctp_backlog_rcv(struct sock *sk, struct sk_buff *skb)
 			sctp_inq_push(inqueue, chunk);
 
 		bh_unlock_sock(sk);
+		local_bh_enable();
 
 		/* If the chunk was backloged again, don't drop refs */
 		if (backloged)

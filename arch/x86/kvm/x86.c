@@ -91,6 +91,7 @@ static u64 __read_mostly efer_reserved_bits = ~((u64)EFER_SCE);
 
 static void update_cr8_intercept(struct kvm_vcpu *vcpu);
 static void process_nmi(struct kvm_vcpu *vcpu);
+static void process_smi(struct kvm_vcpu *vcpu);
 static void __kvm_set_rflags(struct kvm_vcpu *vcpu, unsigned long rflags);
 
 struct kvm_x86_ops *kvm_x86_ops __read_mostly;
@@ -1244,12 +1245,6 @@ static atomic_t kvm_guest_has_master_clock = ATOMIC_INIT(0);
 static DEFINE_PER_CPU(unsigned long, cpu_tsc_khz);
 static unsigned long max_tsc_khz;
 
-static inline u64 nsec_to_cycles(struct kvm_vcpu *vcpu, u64 nsec)
-{
-	return pvclock_scale_delta(nsec, vcpu->arch.virtual_tsc_mult,
-				   vcpu->arch.virtual_tsc_shift);
-}
-
 static u32 adjust_tsc_khz(u32 khz, s32 ppm)
 {
 	u64 v = (u64)khz * (1000000 + ppm);
@@ -2314,6 +2309,7 @@ int kvm_get_msr_common(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 	case MSR_AMD64_NB_CFG:
 	case MSR_FAM10H_MMIO_CONF_BASE:
 	case MSR_AMD64_BU_CFG2:
+	case MSR_IA32_PERF_CTL:
 		msr_info->data = 0;
 		break;
 	case MSR_K7_EVNTSEL0 ... MSR_K7_EVNTSEL3:
@@ -2972,6 +2968,10 @@ static int kvm_vcpu_ioctl_x86_set_vcpu_events(struct kvm_vcpu *vcpu,
 			      | KVM_VCPUEVENT_VALID_SMM))
 		return -EINVAL;
 
+	if (events->exception.injected &&
+	    (events->exception.nr > 31 || events->exception.nr == NMI_VECTOR))
+		return -EINVAL;
+
 	process_nmi(vcpu);
 	vcpu->arch.exception.pending = events->exception.injected;
 	vcpu->arch.exception.nr = events->exception.nr;
@@ -3034,6 +3034,11 @@ static int kvm_vcpu_ioctl_x86_set_debugregs(struct kvm_vcpu *vcpu,
 					    struct kvm_debugregs *dbgregs)
 {
 	if (dbgregs->flags)
+		return -EINVAL;
+
+	if (dbgregs->dr6 & ~0xffffffffull)
+		return -EINVAL;
+	if (dbgregs->dr7 & ~0xffffffffull)
 		return -EINVAL;
 
 	memcpy(vcpu->arch.db, dbgregs->db, sizeof(vcpu->arch.db));
@@ -5292,13 +5297,8 @@ static void kvm_smm_changed(struct kvm_vcpu *vcpu)
 		/* This is a good place to trace that we are exiting SMM.  */
 		trace_kvm_enter_smm(vcpu->vcpu_id, vcpu->arch.smbase, false);
 
-		if (unlikely(vcpu->arch.smi_pending)) {
-			kvm_make_request(KVM_REQ_SMI, vcpu);
-			vcpu->arch.smi_pending = 0;
-		} else {
-			/* Process a latched INIT, if any.  */
-			kvm_make_request(KVM_REQ_EVENT, vcpu);
-		}
+		/* Process a latched INIT or SMI, if any.  */
+		kvm_make_request(KVM_REQ_EVENT, vcpu);
 	}
 
 	kvm_mmu_reset_context(vcpu);
@@ -6098,7 +6098,10 @@ static int inject_pending_event(struct kvm_vcpu *vcpu, bool req_int_win)
 	}
 
 	/* try to inject new event if pending */
-	if (vcpu->arch.nmi_pending && kvm_x86_ops->nmi_allowed(vcpu)) {
+	if (vcpu->arch.smi_pending && !is_smm(vcpu)) {
+		vcpu->arch.smi_pending = false;
+		process_smi(vcpu);
+	} else if (vcpu->arch.nmi_pending && kvm_x86_ops->nmi_allowed(vcpu)) {
 		--vcpu->arch.nmi_pending;
 		vcpu->arch.nmi_injected = true;
 		kvm_x86_ops->set_nmi(vcpu);
@@ -6308,11 +6311,6 @@ static void process_smi(struct kvm_vcpu *vcpu)
 	char buf[512];
 	u32 cr0;
 
-	if (is_smm(vcpu)) {
-		vcpu->arch.smi_pending = true;
-		return;
-	}
-
 	trace_kvm_enter_smm(vcpu->vcpu_id, vcpu->arch.smbase, true);
 	vcpu->arch.hflags |= HF_SMM_MASK;
 	memset(buf, 0, 512);
@@ -6373,6 +6371,12 @@ static void process_smi(struct kvm_vcpu *vcpu)
 
 	kvm_update_cpuid(vcpu);
 	kvm_mmu_reset_context(vcpu);
+}
+
+static void process_smi_request(struct kvm_vcpu *vcpu)
+{
+	vcpu->arch.smi_pending = true;
+	kvm_make_request(KVM_REQ_EVENT, vcpu);
 }
 
 void kvm_make_scan_ioapic_request(struct kvm *kvm)
@@ -6496,7 +6500,7 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 		if (kvm_check_request(KVM_REQ_STEAL_UPDATE, vcpu))
 			record_steal_time(vcpu);
 		if (kvm_check_request(KVM_REQ_SMI, vcpu))
-			process_smi(vcpu);
+			process_smi_request(vcpu);
 		if (kvm_check_request(KVM_REQ_NMI, vcpu))
 			process_nmi(vcpu);
 		if (kvm_check_request(KVM_REQ_PMU, vcpu))
@@ -6569,8 +6573,18 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 
 		if (inject_pending_event(vcpu, req_int_win) != 0)
 			req_immediate_exit = true;
-		/* enable NMI/IRQ window open exits if needed */
 		else {
+			/* Enable NMI/IRQ window open exits if needed.
+			 *
+			 * SMIs have two cases: 1) they can be nested, and
+			 * then there is nothing to do here because RSM will
+			 * cause a vmexit anyway; 2) or the SMI can be pending
+			 * because inject_pending_event has completed the
+			 * injection of an IRQ or NMI from the previous vmexit,
+			 * and then we request an immediate exit to inject the SMI.
+			 */
+			if (vcpu->arch.smi_pending && !is_smm(vcpu))
+				req_immediate_exit = true;
 			if (vcpu->arch.nmi_pending)
 				kvm_x86_ops->enable_nmi_window(vcpu);
 			if (kvm_cpu_has_injectable_intr(vcpu) || req_int_win)
@@ -6621,8 +6635,10 @@ static int vcpu_enter_guest(struct kvm_vcpu *vcpu)
 
 	kvm_load_guest_xcr0(vcpu);
 
-	if (req_immediate_exit)
+	if (req_immediate_exit) {
+		kvm_make_request(KVM_REQ_EVENT, vcpu);
 		smp_send_reschedule(vcpu->cpu);
+	}
 
 	trace_kvm_entry(vcpu->vcpu_id);
 	wait_lapic_expire(vcpu);
@@ -7423,6 +7439,7 @@ void kvm_vcpu_reset(struct kvm_vcpu *vcpu, bool init_event)
 {
 	vcpu->arch.hflags = 0;
 
+	vcpu->arch.smi_pending = 0;
 	atomic_set(&vcpu->arch.nmi_queued, 0);
 	vcpu->arch.nmi_pending = 0;
 	vcpu->arch.nmi_injected = false;
@@ -7815,7 +7832,7 @@ int __x86_set_memory_region(struct kvm *kvm, int id, gpa_t gpa, u32 size)
 
 	slot = id_to_memslot(slots, id);
 	if (size) {
-		if (WARN_ON(slot->npages))
+		if (slot->npages)
 			return -EEXIST;
 
 		/*

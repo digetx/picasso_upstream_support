@@ -427,6 +427,7 @@ static int nfs4_do_handle_exception(struct nfs_server *server,
 		case -NFS4ERR_DELAY:
 			nfs_inc_server_stats(server, NFSIOS_DELAY);
 		case -NFS4ERR_GRACE:
+		case -NFS4ERR_LAYOUTTRYLATER:
 		case -NFS4ERR_RECALLCONFLICT:
 			exception->delay = 1;
 			return 0;
@@ -2882,11 +2883,10 @@ static void nfs4_close_prepare(struct rpc_task *task, void *data)
 			call_close |= is_wronly;
 		else if (is_wronly)
 			calldata->arg.fmode |= FMODE_WRITE;
+		if (calldata->arg.fmode != (FMODE_READ|FMODE_WRITE))
+			call_close |= is_rdwr;
 	} else if (is_rdwr)
 		calldata->arg.fmode |= FMODE_READ|FMODE_WRITE;
-
-	if (calldata->arg.fmode == 0)
-		call_close |= is_rdwr;
 
 	if (!nfs4_valid_open_stateid(state))
 		call_close = 0;
@@ -7870,11 +7870,13 @@ nfs4_layoutget_handle_exception(struct rpc_task *task,
 	struct inode *inode = lgp->args.inode;
 	struct nfs_server *server = NFS_SERVER(inode);
 	struct pnfs_layout_hdr *lo;
-	int status = task->tk_status;
+	int nfs4err = task->tk_status;
+	int err, status = 0;
+	LIST_HEAD(head);
 
 	dprintk("--> %s tk_status => %d\n", __func__, -task->tk_status);
 
-	switch (status) {
+	switch (nfs4err) {
 	case 0:
 		goto out;
 
@@ -7906,45 +7908,43 @@ nfs4_layoutget_handle_exception(struct rpc_task *task,
 			status = -EOVERFLOW;
 			goto out;
 		}
-		/* Fallthrough */
+		status = -EBUSY;
+		break;
 	case -NFS4ERR_RECALLCONFLICT:
-		nfs4_handle_exception(server, -NFS4ERR_RECALLCONFLICT,
-					exception);
 		status = -ERECALLCONFLICT;
-		goto out;
+		break;
 	case -NFS4ERR_EXPIRED:
 	case -NFS4ERR_BAD_STATEID:
 		exception->timeout = 0;
 		spin_lock(&inode->i_lock);
-		if (nfs4_stateid_match(&lgp->args.stateid,
+		lo = NFS_I(inode)->layout;
+		/* If the open stateid was bad, then recover it. */
+		if (!lo || test_bit(NFS_LAYOUT_INVALID_STID, &lo->plh_flags) ||
+		    nfs4_stateid_match_other(&lgp->args.stateid,
 					&lgp->args.ctx->state->stateid)) {
 			spin_unlock(&inode->i_lock);
-			/* If the open stateid was bad, then recover it. */
 			exception->state = lgp->args.ctx->state;
 			break;
 		}
-		lo = NFS_I(inode)->layout;
-		if (lo && nfs4_stateid_match(&lgp->args.stateid,
-					&lo->plh_stateid)) {
-			LIST_HEAD(head);
 
-			/*
-			 * Mark the bad layout state as invalid, then retry
-			 * with the current stateid.
-			 */
-			set_bit(NFS_LAYOUT_INVALID_STID, &lo->plh_flags);
-			pnfs_mark_matching_lsegs_invalid(lo, &head, NULL, 0);
-			spin_unlock(&inode->i_lock);
-			pnfs_free_lseg_list(&head);
-		} else
-			spin_unlock(&inode->i_lock);
+		/*
+		 * Mark the bad layout state as invalid, then retry
+		 */
+		set_bit(NFS_LAYOUT_INVALID_STID, &lo->plh_flags);
+		pnfs_mark_matching_lsegs_invalid(lo, &head, NULL, 0);
+		spin_unlock(&inode->i_lock);
+		pnfs_free_lseg_list(&head);
 		status = -EAGAIN;
 		goto out;
 	}
 
-	status = nfs4_handle_exception(server, status, exception);
-	if (exception->retry)
-		status = -EAGAIN;
+	err = nfs4_handle_exception(server, nfs4err, exception);
+	if (!status) {
+		if (exception->retry)
+			status = -EAGAIN;
+		else
+			status = err;
+	}
 out:
 	dprintk("<-- %s\n", __func__);
 	return status;
@@ -8036,7 +8036,10 @@ nfs4_proc_layoutget(struct nfs4_layoutget *lgp, long *timeout, gfp_t gfp_flags)
 		.flags = RPC_TASK_ASYNC,
 	};
 	struct pnfs_layout_segment *lseg = NULL;
-	struct nfs4_exception exception = { .timeout = *timeout };
+	struct nfs4_exception exception = {
+		.inode = inode,
+		.timeout = *timeout,
+	};
 	int status = 0;
 
 	dprintk("--> %s\n", __func__);
