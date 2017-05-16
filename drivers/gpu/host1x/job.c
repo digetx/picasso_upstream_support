@@ -333,6 +333,27 @@ static bool check_reloc(struct host1x_reloc *reloc, struct host1x_bo *cmdbuf,
 	return true;
 }
 
+static bool check_reloc_shift(struct device *dev, struct host1x_reloc *reloc)
+{
+	struct host1x *host = dev_get_drvdata(dev->parent);
+
+	/* skip newer Tegra's since IOMMU is supposed to be used by
+	 * them and not all address registers with their shifts are
+	 * publicly documented */
+	if (host->info->version > 1)
+		return true;
+
+	/* skip Tegra30 with IOMMU enabled */
+	if (host->domain)
+		return true;
+
+	/* relocation shift value validation isn't implemented yet */
+	if (reloc->shift)
+		return false;
+
+	return true;
+}
+
 struct host1x_firewall {
 	struct host1x_job *job;
 	struct device *dev;
@@ -357,6 +378,9 @@ static int check_register(struct host1x_firewall *fw, unsigned long offset)
 			return -EINVAL;
 
 		if (!check_reloc(fw->reloc, fw->cmdbuf, fw->offset))
+			return -EINVAL;
+
+		if (!check_reloc_shift(fw->dev, fw->reloc))
 			return -EINVAL;
 
 		fw->num_relocs--;

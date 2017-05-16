@@ -72,6 +72,7 @@ static const struct host1x_info host1x01_info = {
 	.init = host1x01_init,
 	.sync_offset = 0x3000,
 	.dma_mask = DMA_BIT_MASK(32),
+	.version = 1,
 };
 
 static const struct host1x_info host1x02_info = {
@@ -82,6 +83,7 @@ static const struct host1x_info host1x02_info = {
 	.init = host1x02_init,
 	.sync_offset = 0x3000,
 	.dma_mask = DMA_BIT_MASK(32),
+	.version = 2,
 };
 
 static const struct host1x_info host1x04_info = {
@@ -92,6 +94,7 @@ static const struct host1x_info host1x04_info = {
 	.init = host1x04_init,
 	.sync_offset = 0x2100,
 	.dma_mask = DMA_BIT_MASK(34),
+	.version = 4,
 };
 
 static const struct host1x_info host1x05_info = {
@@ -102,6 +105,7 @@ static const struct host1x_info host1x05_info = {
 	.init = host1x05_init,
 	.sync_offset = 0x2100,
 	.dma_mask = DMA_BIT_MASK(34),
+	.version = 5,
 };
 
 static const struct of_device_id host1x_of_match[] = {

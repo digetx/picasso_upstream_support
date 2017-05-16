@@ -100,6 +100,7 @@ struct host1x_info {
 	int (*init)(struct host1x *host1x); /* initialize per SoC ops */
 	unsigned int sync_offset; /* offset of syncpoint registers */
 	u64 dma_mask; /* mask of addressable memory */
+	unsigned int version; /* host1x's version */
 };
 
 struct host1x {
