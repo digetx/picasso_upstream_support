@@ -177,7 +177,8 @@ static int host1x_probe(struct platform_device *pdev)
 		return err;
 	}
 
-	if (iommu_present(&platform_bus_type)) {
+	if (iommu_present(&platform_bus_type) &&
+	    !of_machine_is_compatible("nvidia,tegra20")) {
 		struct iommu_domain_geometry *geometry;
 		unsigned long order;
 
