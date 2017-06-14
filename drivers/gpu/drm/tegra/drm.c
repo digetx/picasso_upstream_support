@@ -131,8 +131,7 @@ static int tegra_drm_load(struct drm_device *drm, unsigned long flags)
 	if (!tegra)
 		return -ENOMEM;
 
-	if (iommu_present(&platform_bus_type) &&
-	    !of_machine_is_compatible("nvidia,tegra20")) {
+	if (iommu_present(&platform_bus_type)) {
 		u64 carveout_start, carveout_end, gem_start, gem_end;
 		struct iommu_domain_geometry *geometry;
 		unsigned long order;
