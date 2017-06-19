@@ -128,6 +128,11 @@ struct tegra_dc_stats {
 	unsigned long overflow;
 };
 
+struct tegra_dc_color_key {
+	u32 lower;
+	u32 upper;
+};
+
 struct tegra_dc {
 	struct host1x_client client;
 	struct host1x_syncpt *syncpt;
@@ -158,6 +163,16 @@ struct tegra_dc {
 	const struct tegra_dc_soc_info *soc;
 
 	struct iommu_domain *domain;
+
+	struct {
+		struct drm_property *color_key0_lower;
+		struct drm_property *color_key0_upper;
+		struct drm_property *color_key1_lower;
+		struct drm_property *color_key1_upper;
+	} props;
+
+	struct tegra_dc_color_key color_key0;
+	struct tegra_dc_color_key color_key1;
 };
 
 static inline struct tegra_dc *
@@ -203,6 +218,8 @@ struct tegra_dc_window {
 	struct tegra_bo_tiling tiling;
 	u32 format;
 	u32 swap;
+	bool ckey0;
+	bool ckey1;
 };
 
 /* from dc.c */
